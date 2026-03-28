@@ -3,29 +3,17 @@
 #  backend/main.py  —  AI Control Loop
 #  YHack 2025
 #
-#  ROLE: AI / Backend Engineer (Turtle) owns this file.
+#  ROLE: AI / Backend Engineer (Turtle)
 #
-#  Responsibilities
-#  ─────────────────
-#  - 100 ms serial loop: read Arduino CSV → send command string
-#  - Call K2 Think V2 every 2 s for grid decisions
-#  - Strip <think>…</think> reasoning blocks from K2 response
-#  - Run forecaster.py every cycle to pre-compute predictive signals
-#  - Run policy_engine.py to track mayor button presses + weight mods
-#  - Integrate EIA live market price via eia_client.py
-#  - Push live state to terminal dashboard via frontend/dashboard.py
-#  - Maintain virtual battery, duck curve, reward score
-#
-#  Serial protocol  (must match neo_arduino.ino exactly)
-#    RX from Arduino (100 ms):
-#      "light,temp_c,pressure_hpa,solar_ma,load_ma,pot1,pot2,tilt,button\n"
-#    TX to Arduino (after each K2 decision):
-#      "PWM:v0,...,v15,RELAY:r,LCD1:line1,LCD2:line2\n"
-#
-#  Environment variables (set before running)
-#    NEO_SERIAL_PORT   default COM3  (Mac/Linux: /dev/tty.usbmodemXXXX)
-#    K2_API_KEY        your K2 Think V2 bearer token
-#    EIA_API_KEY       your EIA API key
+#  Core loop (runs every 100 ms):
+#    1. Read sensor CSV from Arduino over USB serial
+#    2. Update virtual battery + sensor history
+#    3. Run forecaster — pre-compute predictive signals
+#    4. Every 2 s: call K2 Think V2 to get a PWM/relay command
+#    5. Apply hard safety overrides (T1, earthquake)
+#    6. Compute reward score
+#    7. Send command string back to Arduino
+#    8. Push full state to dashboard
 # ============================================================
 
 import os
@@ -36,85 +24,81 @@ import math
 import time
 import threading
 import serial
-
 from openai import OpenAI
+from dotenv import load_dotenv
 
-# ── Path setup so we can import from project root ─────────────────────────────
+# ── Load .env before anything else ────────────────────────────────────────────
+load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+
+# ── Path setup ────────────────────────────────────────────────────────────────
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_HERE, ".."))
 sys.path.insert(0, _HERE)
 
-# ── EIA client (optional — falls back to simulation if missing) ───────────────
+# ── Optional modules (system keeps running if any are missing) ─────────────────
 try:
     from backend.eia_client import get_market_price, warm_cache, get_cache_status
-    _EIA_AVAILABLE = True
 except ImportError:
     try:
         from eia_client import get_market_price, warm_cache, get_cache_status
-        _EIA_AVAILABLE = True
     except ImportError:
-        _EIA_AVAILABLE = False
-        print("[WARN] eia_client.py not found — using simulated market price.")
+        get_market_price = None
+        warm_cache       = None
+        get_cache_status = None
+        print("[WARN] eia_client.py not found — simulated market price active.")
 
-# ── Dashboard (optional — falls back to headless if missing) ──────────────────
-try:
-    from frontend.dashboard import run_dashboard, update_state as dash_update
-    _DASH_AVAILABLE = True
-except ImportError:
-    try:
-        from dashboard import run_dashboard, update_state as dash_update
-        _DASH_AVAILABLE = True
-    except ImportError:
-        _DASH_AVAILABLE = False
-        dash_update = lambda _: None
-        print("[WARN] dashboard.py not found — running headless.")
-
-# ── Forecaster ────────────────────────────────────────────────────────────────
 try:
     from backend.forecaster import compute_forecast
-    _FORECAST_AVAILABLE = True
 except ImportError:
     try:
         from forecaster import compute_forecast
-        _FORECAST_AVAILABLE = True
     except ImportError:
-        _FORECAST_AVAILABLE = False
-        print("[WARN] forecaster.py not found — forecast signals will be absent from K2 context.")
+        compute_forecast = None
+        print("[WARN] forecaster.py not found — forecast signals will be absent.")
 
-# ── Policy engine ─────────────────────────────────────────────────────────────
+try:
+    from frontend.dashboard import run_dashboard, update_state as _dash_update
+    _DASH = True
+except ImportError:
+    try:
+        from dashboard import run_dashboard, update_state as _dash_update
+        _DASH = True
+    except ImportError:
+        _DASH = False
+        _dash_update = lambda _: None
+        print("[WARN] dashboard.py not found — running headless.")
+
+# Policy engine is an addon — silently disabled if not present
 try:
     from backend.policy_engine import PolicyEngine
-    _POLICY_AVAILABLE = True
+    _POLICY = True
 except ImportError:
     try:
         from policy_engine import PolicyEngine
-        _POLICY_AVAILABLE = True
+        _POLICY = True
     except ImportError:
-        _POLICY_AVAILABLE = False
-        print("[WARN] policy_engine.py not found — mayor policies disabled.")
+        _POLICY = False
 
-# ─── CONFIGURATION ────────────────────────────────────────────────────────────
-SERIAL_PORT       = os.environ.get("NEO_SERIAL_PORT", "COM3")
-BAUD_RATE         = 9600
-
-K2_API_KEY        = os.environ.get("K2_API_KEY",  "YOUR_K2_KEY_HERE")
-K2_BASE_URL       = "https://api.k2think.ai/v1"
-K2_MODEL          = "MBZUAI-IFM/K2-Think-v2"   # exact model ID — do not change
-
-K2_CALL_INTERVAL  = 2.0    # seconds between K2 API calls (API budget management)
-LOOP_INTERVAL_MS  = 100    # target control loop period in ms
+# ─── CONFIG (all values come from .env) ───────────────────────────────────────
+SERIAL_PORT      = os.environ.get("NEO_SERIAL_PORT",  "COM3")
+BAUD_RATE        = 9600
+K2_API_KEY       = os.environ.get("K2_API_KEY",       "")
+K2_BASE_URL      = "https://api.k2think.ai/v1"
+K2_MODEL         = "MBZUAI-IFM/K2-Think-v2"
+K2_CALL_INTERVAL = float(os.environ.get("K2_CALL_INTERVAL", "2.0"))
+SIM_SPEED        = float(os.environ.get("SIM_SPEED",        "60"))
+LOOP_MS          = 100   # target control loop period in milliseconds
 
 # ─── SIMULATED CLOCK ──────────────────────────────────────────────────────────
 SIM_START = time.time()
-SIM_SPEED = 60   # 1 real second = 60 simulated seconds → 1 real minute = 1 sim hour
 
 def get_sim_hour() -> float:
     return ((time.time() - SIM_START) * SIM_SPEED / 3600.0) % 24.0
 
 # ─── DUCK CURVE ───────────────────────────────────────────────────────────────
 DUCK_CURVE: dict[int, float] = {
-    0:  0.20, 1:  0.15, 2:  0.10, 3:  0.10, 4:  0.10, 5:  0.20,
-    6:  0.50, 7:  0.80, 8:  0.70, 9:  0.50, 10: 0.40, 11: 0.30,
+     0: 0.20,  1: 0.15,  2: 0.10,  3: 0.10,  4: 0.10,  5: 0.20,
+     6: 0.50,  7: 0.80,  8: 0.70,  9: 0.50, 10: 0.40, 11: 0.30,
     12: 0.25, 13: 0.25, 14: 0.30, 15: 0.35, 16: 0.50,
     17: 0.70, 18: 0.90, 19: 1.00, 20: 0.95, 21: 0.80,
     22: 0.60, 23: 0.40,
@@ -124,39 +108,25 @@ def get_duck_demand() -> float:
     return DUCK_CURVE[int(get_sim_hour()) % 24]
 
 # ─── BASE PENALTY / REWARD WEIGHTS ────────────────────────────────────────────
-# PolicyEngine applies modifier functions on top of these at runtime.
-BASE_PENALTY_WEIGHTS: dict[str, float] = {
-    "tier1_dim":     -1000.0,
-    "tier2_per10":   -50.0,
-    "tier3_outrage": -20.0,
-    "tier4_per10":   -5.0,
-    "relay_click":   -500.0,
-    "tier4_revenue": +10.0,
+# PolicyEngine applies modifiers on top of these at runtime when mayor
+# policies are active.  Used directly when policy engine is disabled.
+BASE_WEIGHTS: dict[str, float] = {
+    "tier1_dim":     -1000.0,   # per 1% reduction — catastrophic
+    "tier2_per10":     -50.0,   # per 10% dim below full
+    "tier3_outrage":   -20.0,   # per 10% mismatch vs potentiometer demand
+    "tier4_per10":      -5.0,   # per 10% dim (commercial — minor)
+    "relay_click":    -500.0,   # every time relay switches ON
+    "tier4_revenue":   +10.0,   # per second commercial LEDs are lit
 }
 
-# ─── FALLBACK MARKET PRICE ────────────────────────────────────────────────────
-def _simulated_market_price(sim_hour: float) -> float:
-    """Used only when eia_client is unavailable."""
-    if   7  <= sim_hour < 9:   base = 2.5
-    elif 18 <= sim_hour < 21:  base = 3.0
-    elif 0  <= sim_hour < 5:   base = 0.5
-    else:                       base = 1.0
-    noise = math.sin(time.time() * 0.1) * 0.2
-    return round(max(0.5, min(3.0, base + noise)), 2)
-
-def get_price(sim_hour: float) -> float:
-    if _EIA_AVAILABLE:
-        return get_market_price(sim_hour)
-    return _simulated_market_price(sim_hour)
-
 # ─── VIRTUAL BATTERY ──────────────────────────────────────────────────────────
-battery_soc           = 0.50
-BATTERY_CAPACITY_MAH  = 2000.0
+battery_soc          = 0.50   # starts at 50% charge
+BATTERY_CAPACITY_MAH = 2000.0
 
 def update_battery(solar_ma: float, load_ma: float, dt: float) -> None:
     global battery_soc
-    net_ma = solar_ma - load_ma
-    delta  = (net_ma * dt) / (BATTERY_CAPACITY_MAH * 3600.0)
+    net_ma      = solar_ma - load_ma
+    delta       = (net_ma * dt) / (BATTERY_CAPACITY_MAH * 3600.0)
     battery_soc = max(0.0, min(1.0, battery_soc + delta))
 
 # ─── SENSOR HISTORY ───────────────────────────────────────────────────────────
@@ -166,6 +136,26 @@ def record_sensor(sensor: dict) -> None:
     history.append(sensor)
     if len(history) > 20:
         history.pop(0)
+
+# ─── FALLBACK SLOPE (used only if forecaster.py is missing) ───────────────────
+def _slope(key: str, window: int = 5) -> float:
+    if len(history) < 2:
+        return 0.0
+    vals = [r[key] for r in history[-window:]]
+    return (vals[-1] - vals[0]) / max(len(vals) - 1, 1)
+
+# ─── FALLBACK MARKET PRICE (used only if eia_client.py is missing) ────────────
+def _simulated_price(sim_hour: float) -> float:
+    if   7  <= sim_hour < 9:   base = 2.5
+    elif 18 <= sim_hour < 21:  base = 3.0
+    elif 0  <= sim_hour < 5:   base = 0.5
+    else:                       base = 1.0
+    return round(max(0.5, min(3.0, base + math.sin(time.time() * 0.1) * 0.2)), 2)
+
+def get_price(sim_hour: float) -> float:
+    if get_market_price is not None:
+        return get_market_price(sim_hour)
+    return _simulated_price(sim_hour)
 
 # ─── REWARD TRACKING ──────────────────────────────────────────────────────────
 reward_score = 0.0
@@ -178,40 +168,31 @@ def compute_reward(
     prev_relay: int,
     weights:    dict,
 ) -> float:
-    """
-    Computes the incremental reward for this control cycle and adds it to
-    the running total.  Uses the weights returned by PolicyEngine.get_weights()
-    so that active mayor policies are reflected in the score.
-    """
     global reward_score
     r = 0.0
 
-    # Tier 1 — hospitals must always be 255
+    # T1 — hospitals
     for ch in [0, 1]:
         if pwm[ch] < 255:
-            reduction_pct = (255 - pwm[ch]) / 255 * 100
-            r += weights["tier1_dim"] * reduction_pct
+            r += weights["tier1_dim"] * ((255 - pwm[ch]) / 255 * 100)
 
-    # Tier 2 — utilities
+    # T2 — utilities
     for ch in [2, 3, 4]:
-        dim_pct = (255 - pwm[ch]) / 255.0
-        r += weights["tier2_per10"] * (dim_pct * 10.0)
+        r += weights["tier2_per10"] * ((255 - pwm[ch]) / 255.0 * 10.0)
 
-    # Tier 3 — residential: penalise mismatch vs potentiometer average
+    # T3 — residential: penalise mismatch vs potentiometer average
     pot_avg = ((pot1 + pot2) / 2.0) / 1023.0
     for ch in [5, 6, 7, 8, 9]:
-        actual   = pwm[ch] / 255.0
-        mismatch = abs(actual - pot_avg)
+        mismatch = abs(pwm[ch] / 255.0 - pot_avg)
         r += weights["tier3_outrage"] * (mismatch * 10.0)
 
-    # Tier 4 — commercial: revenue + dim penalty
+    # T4 — commercial: revenue when on, penalty when dimmed
     for ch in [10, 11, 12, 13, 14, 15]:
         if pwm[ch] > 0:
-            r += weights["tier4_revenue"] * 0.1   # per 100 ms cycle
-        dim_pct = (255 - pwm[ch]) / 255.0
-        r += weights["tier4_per10"] * (dim_pct * 10.0)
+            r += weights["tier4_revenue"] * 0.1          # per 100 ms cycle
+        r += weights["tier4_per10"] * ((255 - pwm[ch]) / 255.0 * 10.0)
 
-    # Relay click penalty (only on OFF → ON transition)
+    # Relay click (OFF → ON transition only)
     if relay == 1 and prev_relay == 0:
         r += weights["relay_click"]
 
@@ -219,16 +200,12 @@ def compute_reward(
     return reward_score
 
 # ─── K2 RESPONSE PARSER ───────────────────────────────────────────────────────
-# K2 Think V2 is a reasoning model. It always prefixes its response with a
-# <think>…</think> block before outputting the actual JSON.
-# strip_think_tags() removes that block so json.loads() doesn't crash.
-
+# K2 Think V2 is a reasoning model.  Every response starts with a
+# <think>…</think> block before the actual JSON.  We must strip it.
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
 def strip_think_tags(raw: str) -> str:
-    """Remove K2's <think>…</think> reasoning block from the response."""
     cleaned = _THINK_RE.sub("", raw).strip()
-    # Handle models that emit <think> without a closing tag
     if "<think>" in cleaned:
         if "</think>" in cleaned:
             cleaned = cleaned[cleaned.rfind("</think>") + 8:].strip()
@@ -237,34 +214,26 @@ def strip_think_tags(raw: str) -> str:
     return cleaned
 
 def extract_json(raw: str) -> dict:
-    """
-    Robustly extract a JSON object from K2's response.
-
-    Attempts (in order):
-      1. Strip think tags → direct json.loads
-      2. Find the first { … } block in whatever remains
-    Raises ValueError if neither attempt succeeds.
-    """
+    """Strip think tags then parse JSON.  Falls back to brace-search."""
     cleaned = strip_think_tags(raw)
 
-    # Happy path
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError:
         pass
 
-    # Fallback: find outermost braces
     start = cleaned.find("{")
     end   = cleaned.rfind("}")
-    if start != -1 and end != -1 and end > start:
+    if start != -1 and end > start:
         try:
             return json.loads(cleaned[start : end + 1])
         except json.JSONDecodeError:
             pass
 
-    raise ValueError(f"Could not extract JSON from K2 response:\n{raw[:500]}")
+    raise ValueError(f"No valid JSON found in K2 response:\n{raw[:500]}")
 
 # ─── SAFE FALLBACK COMMAND ────────────────────────────────────────────────────
+# Sent to Arduino whenever K2 is unreachable.
 SAFE_COMMAND: dict = {
     "pwm":       [255, 255, 255, 255, 255,
                   200, 200, 200, 200, 200,
@@ -278,102 +247,90 @@ SAFE_COMMAND: dict = {
 # ─── SYSTEM PROMPT ────────────────────────────────────────────────────────────
 SYSTEM_PROMPT = """
 You are NEO — the Nodal Energy Oracle — the AI brain of a miniature smart city
-power grid running on a physical Arduino breadboard. Your ONLY job is to output
-a single JSON command object every control cycle. Do not explain yourself.
-Do not add prose. Output ONLY valid JSON.
+power grid on a physical Arduino breadboard. Output ONE JSON object per cycle.
+No prose. No explanation. ONLY valid JSON.
 
-=== PHYSICAL SETUP ===
-Two power sources:
-  GREEN GRID : Solar (MB102). Cheap, clean, limited. Tracked by LDR.
-  STATE GRID : Utility (5V 5A adapter). Expensive. Activated by Relay.
-  RELAY CLICK costs relay_click reward points every time it switches ON.
-  Two INA219 sensors: solar_ma (solar output) and load_ma (city draw).
+=== POWER SOURCES ===
+GREEN GRID : Solar (MB102). Cheap, clean, limited. Tracked by LDR.
+STATE GRID : Utility (5V 5A adapter). Expensive. Activated by mechanical Relay.
+Relay click penalty = relay_click reward points each time it switches ON.
+Two INA219 sensors: solar_ma (solar output mA) and load_ma (city draw mA).
 
-24 LEDs across 4 tiers, controlled by a 16-channel PCA9685 PWM driver.
-PWM values: 0 (off) to 255 (full brightness).
+=== 4 TIERS — 16 PCA9685 PWM channels, values 0-255 ===
+T1 CRITICAL   CH 0-1   (2 white LEDs)  HOSPITALS
+  Always 255. Penalty tier1_dim per 1% reduction. Absolute rule.
 
-=== THE 4 TIERS ===
-TIER 1 — CRITICAL  CH 0-1   (2 white LEDs)  HOSPITALS
-  Always 255. Penalty tier1_dim per 1% reduction. Non-negotiable.
-
-TIER 2 — ESSENTIAL CH 2-4   (3 red LEDs)    UTILITIES / INDUSTRY
-  High priority. Use t2_demand_factor to scale target brightness.
+T2 ESSENTIAL  CH 2-4   (3 red LEDs)    UTILITIES / INDUSTRY
+  High priority. Scale target by t2_demand_factor from temperature.
   Penalty tier2_per10 per 10% dim below full.
 
-TIER 3 — RESIDENTIAL CH 5-9 (5 green LEDs)  HOUSES
-  Match potentiometer demand (pot1/pot2 avg, 0-1023 → PWM 0-255).
-  Duck curve applies. Penalty tier3_outrage per 10% mismatch.
+T3 RESIDENTIAL CH 5-9  (5 green LEDs)  HOUSES
+  Match pot1/pot2 average demand (0-1023 maps to PWM 0-255).
+  Duck curve: demand spikes at 7 AM and 7 PM, lowest at 3 AM.
+  Penalty tier3_outrage per 10% mismatch.
 
-TIER 4 — COMMERCIAL CH 10-15 (6 yellow LEDs) MALLS
+T4 COMMERCIAL  CH 10-15 (6 yellow LEDs) MALLS
   Lowest priority — dim first when power is tight.
-  Revenue tier4_revenue per second ON. Penalty tier4_per10 per 10% dim.
+  Revenue tier4_revenue pts/sec when ON. Penalty tier4_per10 per 10% dim.
 
-=== SENSOR INPUTS (you will receive all of these) ===
-light              0-1023      LDR — higher = more solar available
-temp_c             float       DHT11 temperature in Celsius
-pressure_hpa       float       BMP180 pressure in hPa
-solar_ma           float       INA219 solar output in mA
-load_ma            float       INA219 city load in mA
-pot1               0-1023      Residential demand knob A
-pot2               0-1023      Residential demand knob B
-tilt               0 or 1      Tilt switch: 1 = EARTHQUAKE lockdown
-button             0-5         Mayor policy button last pressed (0=none)
-battery_soc        0.0-1.0     Virtual battery state of charge
-sim_hour           0.0-23.9    Simulated time of day
-duck_demand        0.0-1.0     Expected residential demand this hour
-relay_state        0 or 1      Current relay: 0=solar, 1=state grid
-market_price       float       Live EIA-blended electricity price $/kWh
+=== INPUTS YOU WILL RECEIVE ===
+Raw sensors:
+  light          0-1023     LDR — higher = more solar
+  temp_c         float      DHT11 temperature °C
+  pressure_hpa   float      BMP180 pressure hPa
+  solar_ma       float      INA219 solar output mA
+  load_ma        float      INA219 city load mA
+  pot1, pot2     0-1023     Residential demand knobs
+  tilt           0 or 1     Tilt switch: 1 = EARTHQUAKE
+  button         0-5        Mayor policy button (0 = none)
 
-=== PRE-COMPUTED FORECAST SIGNALS (use these — do not rederive) ===
-ttd_seconds            How many seconds until battery hits 0 at current drain
-storm_probability      0.0-1.0 likelihood of incoming storm or cloud cover
-solar_time_remaining   Seconds until LDR hits 0 at current declining slope
-mins_to_demand_spike   Sim-minutes until next duck-curve spike (>= 70% demand)
-t2_demand_factor       Temperature multiplier for T2 target (1.0 - 1.5)
-dim_t4_recommended     bool: pre-computed optimizer says dim T4 now
-recommended_t4_pwm     Suggested T4 PWM from break-even optimizer (0-255)
-breakeven_ttd          TTD threshold below which dimming beats relay click
-market_penalty_active  bool: market price alone warrants avoiding relay
-sun_slope              Rate of change of light sensor (negative = clouds)
-pressure_slope         Rate of change of pressure (negative = storm)
+Derived grid state:
+  battery_soc    0.0-1.0    Virtual battery charge
+  sim_hour       0.0-23.9   Simulated time of day
+  duck_demand    0.0-1.0    Expected residential demand this hour
+  relay_state    0 or 1     Current relay state
+  market_price   float      Live EIA electricity price $/kWh
+  reward_score   float      Running total score
 
-=== ACTIVE MAYOR POLICY FLAGS (injected when buttons are pressed) ===
-policy_industrial_curfew   bool  T2 penalty weight halved — dim utilities freely
-policy_solar_subsidy       bool  battery_soc already boosted +20% in this context
-policy_brownout_protocol   bool  T3 penalty drastically reduced — allow 50% dim
-policy_emergency_grid      bool  relay_click penalty zeroed — flip relay freely
-policy_commercial_lockdown bool  T4 will be zeroed by Python regardless of your output
+Pre-computed forecast signals (use these — do not re-derive):
+  ttd_seconds            Seconds until battery hits 0 at current drain rate
+  storm_probability      0.0-1.0 chance of incoming storm / cloud cover
+  solar_time_remaining   Seconds until LDR slope reaches 0
+  mins_to_demand_spike   Sim-minutes until next duck curve spike (>= 70%)
+  t2_demand_factor       Temperature multiplier for T2 target (1.0-1.5)
+  dim_t4_recommended     bool — optimizer says dim T4 now
+  recommended_t4_pwm     Suggested T4 PWM from break-even math (0-255)
+  breakeven_ttd          TTD below which dimming beats paying relay penalty
+  market_penalty_active  bool — market price alone warrants avoiding relay
+  sun_slope              Rate of change of light (negative = clouds coming)
+  pressure_slope         Rate of change of pressure (negative = storm)
 
-=== EARTHQUAKE LOCKDOWN (tilt = 1) ===
-Immediately: T1=255, T2=255, T3=128, T4=0, relay=1, lcd="SEISMIC LOCKDOWN"
+=== DECISION LOGIC ===
+1. T1 is ALWAYS 255. Never dim hospitals.
+2. EARTHQUAKE (tilt=1): T1=255, T2=255, T3=128, T4=0, relay=1.
+3. Use dim_t4_recommended and recommended_t4_pwm from the optimizer.
+4. storm_probability > 0.6 → aggressively pre-dim T4 to charge battery.
+5. mins_to_demand_spike < 5 → start dimming T4 now to build charge buffer.
+6. Battery:
+     soc > 0.8 and solar surplus  → relay OFF, run on solar only.
+     soc < 0.2                    → dim T4 aggressively.
+     soc < 0.05                   → flip relay ON immediately.
+7. market_penalty_active → avoid relay even at low soc. Dim everything but T1.
+8. Scale T2 brightness target by t2_demand_factor.
 
-=== DECISION LOGIC (apply every cycle) ===
-1. T1 always 255.
-2. If tilt=1 → apply earthquake lockdown.
-3. Use dim_t4_recommended and recommended_t4_pwm from the pre-computed optimizer.
-   You may override these if other factors (market price, storm) justify it.
-4. If storm_probability > 0.6 → aggressively pre-dim T4 regardless of battery.
-5. If mins_to_demand_spike < 5 → start charging battery now (dim T4 early).
-6. Battery rules:
-   - soc > 0.8 and solar surplus → relay OFF, run solar.
-   - soc < 0.2 → dim T4 aggressively.
-   - soc < 0.05 → flip relay ON.
-7. If market_penalty_active → avoid relay even at low soc. Dim everything except T1.
-8. Scale T2 target by t2_demand_factor (extreme temps need more utilities power).
-
-=== OUTPUT — ONLY THIS JSON, NOTHING ELSE ===
+=== OUTPUT — ONLY THIS JSON ===
 {
   "pwm": [255, 255, X, X, X, X, X, X, X, X, X, X, X, X, X, X],
   "relay": 0,
   "lcd_line1": "SOC:XX% $X.XX/kWh",
   "lcd_line2": "Score:XXXXX T4:XX%",
-  "reasoning": "one sentence max"
+  "reasoning": "one sentence"
 }
 
-pwm: exactly 16 integers (0-255). CH 0-1=T1, 2-4=T2, 5-9=T3, 10-15=T4.
-relay: 0=solar only, 1=state grid ON.
-lcd_line1 and lcd_line2: max 16 characters each (hard LCD constraint).
-reasoning: one sentence explaining the main decision this cycle.
+pwm: exactly 16 integers (0-255).
+relay: 0 = solar only, 1 = state grid ON.
+lcd_line1, lcd_line2: max 16 characters each.
+reasoning: one sentence only.
 """
 
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
@@ -381,55 +338,50 @@ reasoning: one sentence explaining the main decision this cycle.
 def main() -> None:
     global battery_soc, reward_score
 
-    # ── EIA cache warm-up ────────────────────────────────────────────────────
-    if _EIA_AVAILABLE:
+    # ── EIA cache warm-up ──────────────────────────────────────────────────────
+    if warm_cache is not None:
         try:
             warm_cache()
         except Exception as e:
-            print(f"[WARN] EIA warm-up failed: {e}")
+            print(f"[EIA] Warm-up failed (simulated price active): {e}")
 
-    # ── Dashboard thread ─────────────────────────────────────────────────────
-    if _DASH_AVAILABLE:
-        dash_thread = threading.Thread(target=run_dashboard, daemon=True)
-        dash_thread.start()
-        print("[NEO] Dashboard thread started.")
+    # ── Dashboard thread ───────────────────────────────────────────────────────
+    if _DASH:
+        threading.Thread(target=run_dashboard, daemon=True).start()
+        print("[NEO] Dashboard started.")
 
-    # ── Policy engine ────────────────────────────────────────────────────────
-    if _POLICY_AVAILABLE:
-        policy = PolicyEngine(sim_start=SIM_START, sim_speed=SIM_SPEED)
-        print("[NEO] Policy engine initialised.")
-    else:
-        policy = None
+    # ── Policy engine (addon — silently skipped if unavailable) ───────────────
+    policy = PolicyEngine(sim_start=SIM_START, sim_speed=SIM_SPEED) if _POLICY else None
 
-    # ── K2 client ────────────────────────────────────────────────────────────
-    k2_client = OpenAI(api_key=K2_API_KEY, base_url=K2_BASE_URL)
+    # ── K2 client ─────────────────────────────────────────────────────────────
+    if not K2_API_KEY:
+        print("[WARN] K2_API_KEY is not set in .env — AI will use safe fallback only.")
+    k2 = OpenAI(api_key=K2_API_KEY or "placeholder", base_url=K2_BASE_URL)
 
-    # ── Serial connection ────────────────────────────────────────────────────
+    # ── Serial connection ──────────────────────────────────────────────────────
     print(f"[NEO] Opening serial port {SERIAL_PORT} @ {BAUD_RATE} baud...")
     try:
         ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
     except serial.SerialException as e:
         print(f"[FATAL] Cannot open serial port: {e}")
-        print("        Set NEO_SERIAL_PORT env-var to the correct port.")
+        print("        → Check NEO_SERIAL_PORT in your .env file.")
         sys.exit(1)
-    time.sleep(2)   # wait for Arduino bootloader reset to finish
+    time.sleep(2)   # wait for Arduino bootloader reset
     print("[NEO] Serial connected. Starting control loop...\n")
 
-    # ── Loop state ───────────────────────────────────────────────────────────
-    prev_relay      = 0
-    last_time       = time.time()
-    last_k2_call    = 0.0
-    current_command: dict | None = None
-    k2_call_count   = 0
+    # ── Loop state ─────────────────────────────────────────────────────────────
+    prev_relay       = 0
+    last_time        = time.time()
+    last_k2_call     = 0.0
+    command: dict    = dict(SAFE_COMMAND)
+    k2_calls         = 0
+    last_btn_seen    = 0
 
-    # Debounce: only handle a button press once per physical press
-    last_button_seen = 0
-
-    # ── Control loop ─────────────────────────────────────────────────────────
+    # ── Control loop ──────────────────────────────────────────────────────────
     while True:
         loop_start = time.time()
 
-        # ── 1. Read sensor CSV from Arduino ──────────────────────────────────
+        # ── 1. Read sensor CSV from Arduino ───────────────────────────────────
         try:
             line = ser.readline().decode("utf-8", errors="replace").strip()
             if not line:
@@ -452,7 +404,7 @@ def main() -> None:
             print(f"[SERIAL] Parse error ({e}): {line!r}")
             continue
 
-        # ── 2. Update derived state ───────────────────────────────────────────
+        # ── 2. Update battery and history ─────────────────────────────────────
         now       = time.time()
         dt        = now - last_time
         last_time = now
@@ -460,29 +412,28 @@ def main() -> None:
         record_sensor(sensor)
         update_battery(sensor["solar_ma"], sensor["load_ma"], dt)
 
-        sim_hour  = get_sim_hour()
-        price     = get_price(sim_hour)
+        sim_hour = get_sim_hour()
+        price    = get_price(sim_hour)
 
-        # ── 3. Mayor policy button (edge-detect — one event per press) ────────
+        # ── 3. Policy engine (addon) ───────────────────────────────────────────
         btn = sensor["button"]
-        if btn != 0 and btn != last_button_seen and policy is not None:
+        if policy is not None and btn != 0 and btn != last_btn_seen:
             name = policy.press(btn)
             if name:
-                print(f"[MAYOR] Policy enacted: {name}")
-        last_button_seen = btn
+                print(f"[MAYOR] {name}")
+        last_btn_seen = btn
 
-        # Get current effective weights and policy context tweaks
-        weights        = policy.get_weights()       if policy else dict(BASE_PENALTY_WEIGHTS)
-        policy_tweaks  = policy.get_context_tweaks() if policy else {}
-        policy_status  = policy.status_dict()        if policy else {"active_policy": "None", "active_policies": [], "policy_expires_in": 0.0, "policy_real_expires": 0.0}
+        weights       = policy.get_weights()        if policy else dict(BASE_WEIGHTS)
+        policy_tweaks = policy.get_context_tweaks() if policy else {}
+        policy_status = policy.status_dict()        if policy else {"active_policy": "None", "active_policies": [], "policy_expires_in": 0.0}
 
-        # Solar Subsidy: boost the SoC seen by K2 and the forecaster
+        # Solar Subsidy: boost SoC seen by forecaster and K2
         effective_soc = battery_soc
         if policy_tweaks.get("policy_solar_subsidy"):
             effective_soc = min(1.0, battery_soc + policy_tweaks.get("soc_bonus", 0.20))
 
         # ── 4. Run forecaster ─────────────────────────────────────────────────
-        if _FORECAST_AVAILABLE:
+        if compute_forecast is not None:
             forecast = compute_forecast(
                 history         = history,
                 battery_soc     = effective_soc,
@@ -494,14 +445,9 @@ def main() -> None:
                 penalty_weights = weights,
             )
         else:
-            # Minimal fallback slope computation if forecaster is missing
-            def _slope(key: str, w: int = 5) -> float:
-                if len(history) < 2: return 0.0
-                v = [r[key] for r in history[-w:]]
-                return (v[-1] - v[0]) / max(len(v) - 1, 1)
             forecast = {
-                "sun_slope":             round(_slope("light"),         2),
-                "pressure_slope":        round(_slope("pressure_hpa"),  4),
+                "sun_slope":             round(_slope("light"),        2),
+                "pressure_slope":        round(_slope("pressure_hpa"), 4),
                 "ttd_seconds":           99999.0,
                 "storm_probability":     0.0,
                 "solar_time_remaining":  99999.0,
@@ -513,127 +459,103 @@ def main() -> None:
                 "market_penalty_active": price > 2.0,
             }
 
-        # ── 5. Build K2 context object ────────────────────────────────────────
+        # ── 5. Build K2 context ────────────────────────────────────────────────
         context: dict = {
-            # Raw sensor data
             **sensor,
-            # Derived grid state
-            "battery_soc":    round(effective_soc, 3),
-            "sim_hour":       round(sim_hour, 2),
-            "duck_demand":    round(get_duck_demand(), 2),
-            "relay_state":    prev_relay,
-            "market_price":   price,
-            "reward_score":   round(reward_score, 1),
-            # Pre-computed forecast signals (from forecaster.py)
+            "battery_soc":  round(effective_soc, 3),
+            "sim_hour":     round(sim_hour, 2),
+            "duck_demand":  round(get_duck_demand(), 2),
+            "relay_state":  prev_relay,
+            "market_price": price,
+            "reward_score": round(reward_score, 1),
             **forecast,
-            # Active policy flags (from policy_engine.py)
+            # Inject active policy flags so K2 knows what the mayor did
             **{k: v for k, v in policy_tweaks.items() if k != "soc_bonus"},
         }
 
-        # ── 6. Call K2 Think V2 every K2_CALL_INTERVAL seconds ───────────────
-        if now - last_k2_call >= K2_CALL_INTERVAL:
-            last_k2_call  = now
-            k2_call_count += 1
+        # ── 6. Call K2 Think V2 (rate-limited to K2_CALL_INTERVAL) ───────────
+        if now - last_k2_call >= K2_CALL_INTERVAL and K2_API_KEY:
+            last_k2_call = now
+            k2_calls    += 1
             try:
-                response = k2_client.chat.completions.create(
+                resp = k2.chat.completions.create(
                     model       = K2_MODEL,
-                    max_tokens  = 512,    # enough for think block + JSON
-                    temperature = 0.1,    # near-deterministic grid decisions
+                    max_tokens  = 512,
+                    temperature = 0.1,
                     messages    = [
                         {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user",   "content": json.dumps(context)},
                     ],
                 )
-                raw             = response.choices[0].message.content or ""
-                current_command = extract_json(raw)
+                raw     = resp.choices[0].message.content or ""
+                command = extract_json(raw)
 
-                # Validate PWM array
-                if len(current_command.get("pwm", [])) != 16:
-                    raise ValueError("pwm array must have exactly 16 values")
+                if len(command.get("pwm", [])) != 16:
+                    raise ValueError("K2 returned wrong pwm length")
 
-                # Hard safety override — never let K2 dim hospitals
-                current_command["pwm"][0] = 255
-                current_command["pwm"][1] = 255
+                # Hard safety: hospitals always full power
+                command["pwm"][0] = 255
+                command["pwm"][1] = 255
 
-                print(f"[K2 #{k2_call_count}] {current_command.get('reasoning', '')}")
+                print(f"[K2 #{k2_calls}] {command.get('reasoning', '')}")
 
             except Exception as e:
-                print(f"[K2 ERROR #{k2_call_count}] {e}")
-                current_command = dict(SAFE_COMMAND)
+                print(f"[K2 ERROR] {e}")
+                command = dict(SAFE_COMMAND)
 
-        if current_command is None:
-            time.sleep(0.05)
-            continue
+        # ── 7. Hard overrides (enforced in Python, not just in the prompt) ────
 
-        # ── 7. Apply hard policy overrides AFTER K2 decision ─────────────────
-        # These happen in Python, not in the prompt — they are guaranteed.
-
-        # Commercial Lockdown (Button 5): zero all T4 channels, no exceptions
+        # Commercial Lockdown policy: zero T4 regardless of K2
         if policy is not None and policy.commercial_lockdown_active():
             for ch in range(10, 16):
-                current_command["pwm"][ch] = 0
+                command["pwm"][ch] = 0
 
-        # Earthquake Lockdown (tilt sensor): override everything
+        # Earthquake: override everything — tilt sensor is law
         if sensor["tilt"] == 1:
-            current_command["pwm"][0]  = 255   # T1 hospitals
-            current_command["pwm"][1]  = 255
-            current_command["pwm"][2]  = 255   # T2 utilities
-            current_command["pwm"][3]  = 255
-            current_command["pwm"][4]  = 255
-            current_command["pwm"][5]  = 128   # T3 residential half-power
-            current_command["pwm"][6]  = 128
-            current_command["pwm"][7]  = 128
-            current_command["pwm"][8]  = 128
-            current_command["pwm"][9]  = 128
-            for ch in range(10, 16):           # T4 commercial off
-                current_command["pwm"][ch] = 0
-            current_command["relay"]     = 1
-            current_command["lcd_line1"] = "SEISMIC LOCKDOWN"
-            current_command["lcd_line2"] = "ALL CLEAR NEEDED"
-            current_command["reasoning"] = "Earthquake lockdown — tilt sensor fired."
+            command["pwm"][:2]  = [255, 255]   # T1 hospitals full
+            command["pwm"][2:5] = [255, 255, 255]   # T2 utilities full
+            command["pwm"][5:10] = [128] * 5    # T3 residential half
+            command["pwm"][10:16] = [0] * 6     # T4 commercial off
+            command["relay"]     = 1
+            command["lcd_line1"] = "SEISMIC LOCKDOWN"
+            command["lcd_line2"] = "ALL CLEAR NEEDED"
+            command["reasoning"] = "Earthquake lockdown — tilt sensor fired."
 
         # ── 8. Compute reward ─────────────────────────────────────────────────
         reward_score = compute_reward(
-            pwm        = current_command["pwm"],
-            relay      = current_command["relay"],
+            pwm        = command["pwm"],
+            relay      = command["relay"],
             pot1       = sensor["pot1"],
             pot2       = sensor["pot2"],
             prev_relay = prev_relay,
             weights    = weights,
         )
-        prev_relay = current_command["relay"]
+        prev_relay = command["relay"]
 
-        # ── 9. Grid fault detection (audit loop) ─────────────────────────────
-        # If the AI commanded a significant T4 dim but INA219 load didn't drop,
-        # flag a hardware fault — could be a wiring fault or "energy theft."
+        # ── 9. Grid fault detection ───────────────────────────────────────────
+        # If T4 was commanded off but measured load didn't drop, flag it.
         fault_msg = ""
         if len(history) >= 4:
-            prev_load    = history[-4]["load_ma"]
-            this_load    = sensor["load_ma"]
-            t4_avg       = sum(current_command["pwm"][10:16]) / 6.0
-            load_change  = abs(this_load - prev_load)
-            if t4_avg < 30 and load_change < 5.0 and prev_load > 50:
-                fault_msg = f"Grid Fault: T4 dim but load unchanged ({this_load:.0f} mA)"
+            prev_load = history[-4]["load_ma"]
+            this_load = sensor["load_ma"]
+            t4_avg    = sum(command["pwm"][10:16]) / 6.0
+            if t4_avg < 30 and abs(this_load - prev_load) < 5.0 and prev_load > 50:
+                fault_msg = f"Grid Fault: T4 dim, load unchanged ({this_load:.0f} mA)"
                 print(f"[FAULT] {fault_msg}")
 
-        # ── 10. Send command string to Arduino ───────────────────────────────
-        pwm_str = ",".join(str(v) for v in current_command["pwm"])
-        lcd1    = current_command.get("lcd_line1", "NEO RUNNING     ")[:16].ljust(16)
-        lcd2    = current_command.get("lcd_line2", "                ")[:16].ljust(16)
-        cmd_str = (
-            f"PWM:{pwm_str},"
-            f"RELAY:{current_command['relay']},"
-            f"LCD1:{lcd1},"
-            f"LCD2:{lcd2}\n"
-        )
+        # ── 10. Send command to Arduino ───────────────────────────────────────
+        pwm_str  = ",".join(str(v) for v in command["pwm"])
+        lcd1     = command.get("lcd_line1", "NEO RUNNING     ")[:16].ljust(16)
+        lcd2     = command.get("lcd_line2", "                ")[:16].ljust(16)
+        out      = f"PWM:{pwm_str},RELAY:{command['relay']},LCD1:{lcd1},LCD2:{lcd2}\n"
         try:
-            ser.write(cmd_str.encode("utf-8"))
+            ser.write(out.encode("utf-8"))
         except serial.SerialException as e:
             print(f"[SERIAL] Write error: {e}")
 
         # ── 11. Push state to dashboard ───────────────────────────────────────
         eia_status: dict = {}
-        if _EIA_AVAILABLE:
+        if get_cache_status is not None:
             try:
                 eia_status = get_cache_status()
             except Exception:
@@ -641,65 +563,58 @@ def main() -> None:
 
         loop_ms = (time.time() - loop_start) * 1000.0
 
-        dash_update({
-            # Grid
-            "battery_soc":    battery_soc,      # real SoC (not subsidy-boosted)
-            "sim_hour":       sim_hour,
-            "market_price":   price,
-            "relay":          current_command["relay"],
-            "reward_score":   reward_score,
-            # Sensors
-            "light":          sensor["light"],
-            "temp_c":         sensor["temp_c"],
-            "pressure_hpa":   sensor["pressure_hpa"],
-            "solar_ma":       sensor["solar_ma"],
-            "load_ma":        sensor["load_ma"],
-            "pot1":           sensor["pot1"],
-            "pot2":           sensor["pot2"],
-            "tilt":           sensor["tilt"],
-            "button":         sensor["button"],
-            # Forecast (from forecaster.py)
-            "sun_slope":              forecast.get("sun_slope", 0.0),
-            "pressure_slope":         forecast.get("pressure_slope", 0.0),
-            "duck_demand":            get_duck_demand(),
-            "storm_probability":      forecast.get("storm_probability", 0.0),
-            "ttd_seconds":            forecast.get("ttd_seconds", 99999.0),
-            "dim_t4_recommended":     forecast.get("dim_t4_recommended", False),
-            "recommended_t4_pwm":     forecast.get("recommended_t4_pwm", 255),
-            "mins_to_demand_spike":   forecast.get("mins_to_demand_spike", 9999.0),
-            # AI
-            "pwm":            current_command["pwm"],
-            "reasoning":      current_command.get("reasoning", ""),
-            # EIA
-            "eia_retail":     eia_status.get("retail_usd_per_kwh", 0.17),
-            "eia_demand_mw":  eia_status.get("demand_mw",          400_000.0),
-            "eia_live":       eia_status.get("live",                False),
-            "eia_age_s":      eia_status.get("age_seconds",         0.0),
-            # Policy
+        _dash_update({
+            "battery_soc":          battery_soc,
+            "sim_hour":             sim_hour,
+            "market_price":         price,
+            "relay":                command["relay"],
+            "reward_score":         reward_score,
+            "light":                sensor["light"],
+            "temp_c":               sensor["temp_c"],
+            "pressure_hpa":         sensor["pressure_hpa"],
+            "solar_ma":             sensor["solar_ma"],
+            "load_ma":              sensor["load_ma"],
+            "pot1":                 sensor["pot1"],
+            "pot2":                 sensor["pot2"],
+            "tilt":                 sensor["tilt"],
+            "button":               sensor["button"],
+            "sun_slope":            forecast.get("sun_slope",            0.0),
+            "pressure_slope":       forecast.get("pressure_slope",       0.0),
+            "duck_demand":          get_duck_demand(),
+            "storm_probability":    forecast.get("storm_probability",    0.0),
+            "ttd_seconds":          forecast.get("ttd_seconds",          99999.0),
+            "dim_t4_recommended":   forecast.get("dim_t4_recommended",   False),
+            "recommended_t4_pwm":   forecast.get("recommended_t4_pwm",   255),
+            "mins_to_demand_spike": forecast.get("mins_to_demand_spike", 9999.0),
+            "pwm":                  command["pwm"],
+            "reasoning":            command.get("reasoning", ""),
+            "eia_retail":           eia_status.get("retail_usd_per_kwh", 0.17),
+            "eia_demand_mw":        eia_status.get("demand_mw",          400_000.0),
+            "eia_live":             eia_status.get("live",               False),
+            "eia_age_s":            eia_status.get("age_seconds",        0.0),
+            "fault":                fault_msg,
+            "loop_ms":              loop_ms,
+            "k2_calls":             k2_calls,
             **policy_status,
-            # Meta
-            "fault":          fault_msg,
-            "loop_ms":        loop_ms,
-            "k2_calls":       k2_call_count,
         })
 
-        # ── 12. Pace the loop to ~100 ms ─────────────────────────────────────
+        # ── 12. Pace to 100 ms ────────────────────────────────────────────────
         elapsed = time.time() - loop_start
-        sleep_s = max(0.0, (LOOP_INTERVAL_MS / 1000.0) - elapsed)
-        time.sleep(sleep_s)
+        time.sleep(max(0.0, LOOP_MS / 1000.0 - elapsed))
 
 
 # ─── ENTRY POINT ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     print("=" * 60)
-    print("  NEO — Nodal Energy Oracle")
-    print("  YHack 2025")
+    print("  NEO — Nodal Energy Oracle  |  YHack 2025")
     print("=" * 60)
-    print(f"  Serial port  : {SERIAL_PORT}")
-    print(f"  K2 model     : {K2_MODEL}")
-    print(f"  EIA client   : {'enabled' if _EIA_AVAILABLE else 'SIMULATED'}")
-    print(f"  Forecaster   : {'enabled' if _FORECAST_AVAILABLE else 'DISABLED'}")
-    print(f"  Policy engine: {'enabled' if _POLICY_AVAILABLE else 'DISABLED'}")
-    print(f"  Dashboard    : {'enabled' if _DASH_AVAILABLE else 'headless'}")
+    print(f"  Serial port   : {SERIAL_PORT}")
+    print(f"  K2 model      : {K2_MODEL}")
+    print(f"  K2 interval   : {K2_CALL_INTERVAL}s")
+    print(f"  Sim speed     : {SIM_SPEED}x")
+    print(f"  EIA client    : {'enabled' if get_market_price  else 'SIMULATED'}")
+    print(f"  Forecaster    : {'enabled' if compute_forecast  else 'DISABLED'}")
+    print(f"  Policy engine : {'enabled' if _POLICY          else 'addon not loaded'}")
+    print(f"  Dashboard     : {'enabled' if _DASH            else 'headless'}")
     print("=" * 60 + "\n")
     main()
