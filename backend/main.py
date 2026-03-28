@@ -217,21 +217,64 @@ def strip_think_tags(raw: str) -> str:
     return cleaned
 
 def extract_json(raw: str) -> dict:
-    """Strip think tags then parse JSON.  Falls back to brace-search."""
+    """
+    Find and return the best JSON object in K2's response.
+
+    K2 Think V2 reasons at length before outputting JSON.  We scan every
+    { ... } block in the response and return the first one that:
+      1. Parses as valid JSON, AND
+      2. Contains a 'pwm' key with a list of exactly 16 integers.
+
+    Falls back to any parseable JSON object if no pwm-bearing block is found.
+    """
     cleaned = strip_think_tags(raw)
 
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        pass
+    # Collect every candidate substring that starts with { and ends with }
+    candidates: list[str] = []
 
-    start = cleaned.find("{")
-    end   = cleaned.rfind("}")
-    if start != -1 and end > start:
+    # Walk every opening brace and find its matching closing brace
+    depth = 0
+    start = -1
+    for i, ch in enumerate(cleaned):
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start != -1:
+                candidates.append(cleaned[start : i + 1])
+                start = -1
+
+    # Also try the whole stripped string as-is
+    candidates.append(cleaned)
+
+    best_fallback: dict | None = None
+
+    for candidate in candidates:
         try:
-            return json.loads(cleaned[start : end + 1])
-        except json.JSONDecodeError:
-            pass
+            obj = json.loads(candidate)
+        except (json.JSONDecodeError, ValueError):
+            continue
+
+        if not isinstance(obj, dict):
+            continue
+
+        # Ideal match: has pwm with exactly 16 integers
+        pwm = obj.get("pwm")
+        if (
+            isinstance(pwm, list)
+            and len(pwm) == 16
+            and all(isinstance(v, int) for v in pwm)
+        ):
+            return obj
+
+        # Keep as fallback if it has at least pwm and relay
+        if best_fallback is None and "pwm" in obj and "relay" in obj:
+            best_fallback = obj
+
+    if best_fallback is not None:
+        return best_fallback
 
     raise ValueError(f"No valid JSON found in K2 response:\n{raw[:500]}")
 
@@ -251,93 +294,90 @@ def safe_command() -> dict:
     """Always returns a deep copy so in-place PWM mutations never corrupt the template."""
     return copy.deepcopy(SAFE_COMMAND)
 
+def repair_command(partial: dict) -> dict:
+    """
+    Patch a partially-valid K2 response so the control loop can still use it.
+
+    Handles the most common failure mode: K2 reasons for so long that it runs
+    out of generation budget mid-JSON, producing a truncated pwm array.
+
+    Safe defaults applied per tier:
+        CH 0-1   (T1 hospitals)  → 255  (always full, safety rule)
+        CH 2-4   (T2 utilities)  → 255  (keep full when uncertain)
+        CH 5-9   (T3 residential)→ 128  (half power — conservative)
+        CH 10-15 (T4 commercial) → 128  (half power — conservative)
+    """
+    pwm = list(partial.get("pwm", []))
+
+    # Pad to exactly 16 with tier-appropriate safe defaults
+    safe_defaults = [255, 255, 255, 255, 255,       # T1, T2
+                     128, 128, 128, 128, 128,         # T3
+                     128, 128, 128, 128, 128, 128]    # T4
+    while len(pwm) < 16:
+        pwm.append(safe_defaults[len(pwm)])
+
+    # Truncate if somehow over 16
+    pwm = pwm[:16]
+
+    # Always enforce T1 safety regardless of what K2 put there
+    pwm[0] = 255
+    pwm[1] = 255
+
+    partial["pwm"] = pwm
+
+    if not isinstance(partial.get("relay"), int) or partial["relay"] not in (0, 1):
+        partial["relay"] = 0
+
+    if not partial.get("lcd_line1"):
+        partial["lcd_line1"] = "NEO REPAIRED    "
+
+    if not partial.get("lcd_line2"):
+        partial["lcd_line2"] = "PARTIAL RESPONSE"
+
+    if not partial.get("reasoning"):
+        partial["reasoning"] = "Partial K2 response repaired with safe defaults."
+
+    return partial
+
 # ─── SYSTEM PROMPT ────────────────────────────────────────────────────────────
 SYSTEM_PROMPT = """
-You are NEO — the Nodal Energy Oracle — the AI brain of a miniature smart city
-power grid on a physical Arduino breadboard. Output ONE JSON object per cycle.
-No prose. No explanation. ONLY valid JSON.
+You are NEO, the AI brain of a miniature smart city power grid on an Arduino.
+
+YOUR ONLY JOB: read the JSON sensor data you receive and respond with a single
+JSON object. No thinking out loud. No explanation. No prose. No lists. Nothing
+before the opening brace. Nothing after the closing brace. JUST THE JSON.
 
 === POWER SOURCES ===
-GREEN GRID : Solar (MB102). Cheap, clean, limited. Tracked by LDR.
-STATE GRID : Utility (5V 5A adapter). Expensive. Activated by mechanical Relay.
-Relay click penalty = relay_click reward points each time it switches ON.
-Two INA219 sensors: solar_ma (solar output mA) and load_ma (city draw mA).
+GREEN GRID : Solar (MB102). Cheap, limited. Tracked by LDR sensor.
+STATE GRID : Utility adapter. Expensive. Activated by Relay.
+Two INA219 sensors: solar_ma = solar output, load_ma = city draw.
 
-=== 4 TIERS — 16 PCA9685 PWM channels, values 0-255 ===
-T1 CRITICAL   CH 0-1   (2 white LEDs)  HOSPITALS
-  Always 255. Penalty tier1_dim per 1% reduction. Absolute rule.
+=== 4 TIERS (16 PWM channels, 0=off, 255=full) ===
+T1  CH 0-1   HOSPITALS   Always 255. Never dim. Catastrophic penalty if low.
+T2  CH 2-4   UTILITIES   High priority. Scale by t2_demand_factor.
+T3  CH 5-9   HOUSES      Match (pot1+pot2)/2 mapped to 0-255. Penalty if mismatch.
+T4  CH 10-15 MALLS       Dim first. Revenue when on, small penalty when dimmed.
 
-T2 ESSENTIAL  CH 2-4   (3 red LEDs)    UTILITIES / INDUSTRY
-  High priority. Scale target by t2_demand_factor from temperature.
-  Penalty tier2_per10 per 10% dim below full.
+=== DECISION RULES ===
+1. T1 channels 0 and 1 are ALWAYS 255. No exceptions.
+2. If tilt=1: set T1=255, T2=255, T3=128, T4=0, relay=1.
+3. If dim_t4_recommended=true: use recommended_t4_pwm for T4 channels.
+4. If storm_probability > 0.6: dim T4 aggressively to pre-charge battery.
+5. If mins_to_demand_spike < 5: start dimming T4 to build charge buffer.
+6. If battery_soc < 0.05: relay=1. If battery_soc < 0.2: dim T4 hard.
+7. If market_penalty_active=true: avoid relay, dim everything except T1.
+8. Multiply T2 target brightness by t2_demand_factor (temperature load).
 
-T3 RESIDENTIAL CH 5-9  (5 green LEDs)  HOUSES
-  Match pot1/pot2 average demand (0-1023 maps to PWM 0-255).
-  Duck curve: demand spikes at 7 AM and 7 PM, lowest at 3 AM.
-  Penalty tier3_outrage per 10% mismatch.
+=== YOUR RESPONSE MUST BE EXACTLY THIS JSON STRUCTURE ===
+{"pwm":[255,255,X,X,X,X,X,X,X,X,X,X,X,X,X,X],"relay":0,"lcd_line1":"SOC:XX% $X.XX","lcd_line2":"Score:XXXXX T4:XX%","reasoning":"one sentence"}
 
-T4 COMMERCIAL  CH 10-15 (6 yellow LEDs) MALLS
-  Lowest priority — dim first when power is tight.
-  Revenue tier4_revenue pts/sec when ON. Penalty tier4_per10 per 10% dim.
+Rules:
+- pwm: exactly 16 integers each 0-255
+- relay: 0 or 1
+- lcd_line1 and lcd_line2: strings of 16 characters or fewer
+- reasoning: one short sentence
 
-=== INPUTS YOU WILL RECEIVE ===
-Raw sensors:
-  light          0-1023     LDR — higher = more solar
-  temp_c         float      DHT11 temperature °C
-  pressure_hpa   float      BMP180 pressure hPa
-  solar_ma       float      INA219 solar output mA
-  load_ma        float      INA219 city load mA
-  pot1, pot2     0-1023     Residential demand knobs
-  tilt           0 or 1     Tilt switch: 1 = EARTHQUAKE
-  button         0-5        Mayor policy button (0 = none)
-
-Derived grid state:
-  battery_soc    0.0-1.0    Virtual battery charge
-  sim_hour       0.0-23.9   Simulated time of day
-  duck_demand    0.0-1.0    Expected residential demand this hour
-  relay_state    0 or 1     Current relay state
-  market_price   float      Live EIA electricity price $/kWh
-  reward_score   float      Running total score
-
-Pre-computed forecast signals (use these — do not re-derive):
-  ttd_seconds            Seconds until battery hits 0 at current drain rate
-  storm_probability      0.0-1.0 chance of incoming storm / cloud cover
-  solar_time_remaining   Seconds until LDR slope reaches 0
-  mins_to_demand_spike   Sim-minutes until next duck curve spike (>= 70%)
-  t2_demand_factor       Temperature multiplier for T2 target (1.0-1.5)
-  dim_t4_recommended     bool — optimizer says dim T4 now
-  recommended_t4_pwm     Suggested T4 PWM from break-even math (0-255)
-  breakeven_ttd          TTD below which dimming beats paying relay penalty
-  market_penalty_active  bool — market price alone warrants avoiding relay
-  sun_slope              Rate of change of light (negative = clouds coming)
-  pressure_slope         Rate of change of pressure (negative = storm)
-
-=== DECISION LOGIC ===
-1. T1 is ALWAYS 255. Never dim hospitals.
-2. EARTHQUAKE (tilt=1): T1=255, T2=255, T3=128, T4=0, relay=1.
-3. Use dim_t4_recommended and recommended_t4_pwm from the optimizer.
-4. storm_probability > 0.6 → aggressively pre-dim T4 to charge battery.
-5. mins_to_demand_spike < 5 → start dimming T4 now to build charge buffer.
-6. Battery:
-     soc > 0.8 and solar surplus  → relay OFF, run on solar only.
-     soc < 0.2                    → dim T4 aggressively.
-     soc < 0.05                   → flip relay ON immediately.
-7. market_penalty_active → avoid relay even at low soc. Dim everything but T1.
-8. Scale T2 brightness target by t2_demand_factor.
-
-=== OUTPUT — ONLY THIS JSON ===
-{
-  "pwm": [255, 255, X, X, X, X, X, X, X, X, X, X, X, X, X, X],
-  "relay": 0,
-  "lcd_line1": "SOC:XX% $X.XX/kWh",
-  "lcd_line2": "Score:XXXXX T4:XX%",
-  "reasoning": "one sentence"
-}
-
-pwm: exactly 16 integers (0-255).
-relay: 0 = solar only, 1 = state grid ON.
-lcd_line1, lcd_line2: max 16 characters each.
-reasoning: one sentence only.
+DO NOT write anything before { or after }. Output the JSON and nothing else.
 """
 
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
@@ -487,7 +527,7 @@ def main() -> None:
             try:
                 resp = k2.chat.completions.create(
                     model       = K2_MODEL,
-                    max_tokens  = 512,
+                    max_tokens  = 8192,  # model reasons for ~15k chars before JSON
                     temperature = 0.1,
                     messages    = [
                         {"role": "system", "content": SYSTEM_PROMPT},
@@ -497,8 +537,10 @@ def main() -> None:
                 raw     = resp.choices[0].message.content or ""
                 command = extract_json(raw)
 
+                # Repair truncated responses instead of discarding them
                 if len(command.get("pwm", [])) != 16:
-                    raise ValueError("K2 returned wrong pwm length")
+                    command = repair_command(command)
+                    print(f"[K2 #{k2_calls}] Repaired partial response (pwm padded to 16)")
 
                 # Hard safety: hospitals always full power
                 command["pwm"][0] = 255

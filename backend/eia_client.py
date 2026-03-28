@@ -67,25 +67,35 @@ def _fetch_retail_price() -> float:
 
     EIA endpoint:
         /v2/electricity/retail-sales/data/
-        frequency  = monthly
-        data[0]    = price          (cents / kWh)
-        stateid    = US             (national average)
-        sectorName = all sectors
+        frequency = monthly
+        data[0]   = price  (cents / kWh)
+
+    No state or sector facets are applied — the EIA API rejects "US" as a
+    stateid and "all sectors" as a sectorName.  Instead we pull the 20 most
+    recent monthly rows across all states and sectors, filter out nulls, and
+    return the mean.  This gives a robust national average regardless of which
+    specific state/sector rows the API happens to return first.
     """
     js = _get(
         "/electricity/retail-sales/data/",
         {
             "frequency":          "monthly",
             "data[0]":            "price",
-            "facets[stateid][]":  "US",
-            "facets[sectorName][]": "all sectors",
             "sort[0][column]":    "period",
             "sort[0][direction]": "desc",
-            "length":             "1",
+            "length":             "20",
         },
     )
-    cents_per_kwh = float(js["response"]["data"][0]["price"])
-    return cents_per_kwh / 100.0   # → $/kWh
+    rows = js["response"]["data"]
+    prices = [
+        float(r["price"])
+        for r in rows
+        if r.get("price") is not None and float(r["price"]) > 0
+    ]
+    if not prices:
+        raise ValueError("EIA returned no valid price rows")
+    avg_cents = sum(prices) / len(prices)
+    return avg_cents / 100.0   # cents/kWh -> $/kWh
 
 
 def _fetch_rto_demand() -> float:
