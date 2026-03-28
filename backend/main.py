@@ -354,28 +354,102 @@ Two INA219 sensors: solar_ma = solar output, load_ma = city draw.
 
 === 4 TIERS (16 PWM channels, 0=off, 255=full) ===
 T1  CH 0-1   HOSPITALS   Always 255. Never dim. Catastrophic penalty if low.
-T2  CH 2-4   UTILITIES   High priority. Scale by t2_demand_factor.
-T3  CH 5-9   HOUSES      Match (pot1+pot2)/2 mapped to 0-255. Penalty if mismatch.
-T4  CH 10-15 MALLS       Dim first. Revenue when on, small penalty when dimmed.
+T2  CH 2-4   UTILITIES   Industry demand (varies by temperature).
+T3  CH 5-9   HOUSES      Residents demand (track potentiometer, but context matters).
+T4  CH 10-15 MALLS       Commercial — can be dimmed for reserve charging.
 
-=== DECISION RULES ===
-1. T1 channels 0 and 1 are ALWAYS 255. No exceptions.
-2. If tilt=1: set T1=255, T2=255, T3=128, T4=0, relay=1.
-3. If dim_t4_recommended=true: use recommended_t4_pwm for T4 channels.
-4. If storm_probability > 0.6: dim T4 aggressively to pre-charge battery.
-5. If mins_to_demand_spike < 5: start dimming T4 to build charge buffer.
-6. If battery_soc < 0.05: relay=1. If battery_soc < 0.2: dim T4 hard.
-7. If market_penalty_active=true: avoid relay, dim everything except T1.
-8. Multiply T2 target brightness by t2_demand_factor (temperature load).
+=== HOW THE REWARD SYSTEM WORKS ===
+Your goal is to minimize penalties:
+  • dim T1 → CATASTROPHIC penalty (-1000/1% reduction)
+  • dim T2 → HIGH penalty (-50 per 10%)
+  • T3 mismatch from pot → PENALTY (-20 per 10% mismatch)
+  • relay click → EXPENSIVE (-500 per activation)
+  • dim T4 → small penalty (-5 per 10%)
+
+You GAIN points by:
+  • T4 revenue: +10/sec when T4 is on
+
+When battery SOC will hit 0%, a relay click becomes inevitable unless you
+pre-charge by dimming now. Your job: decide if it's cheaper to dim T4 early
+(lose revenue) or click the relay late (catastrophic penalty).
+
+=== WEATHER SIGNALS YOU RECEIVE ===
+
+storm_probability (0.0 – 1.0)
+  • Comes from: falling air pressure + dimming light
+  • Meaning: clouds/storm approaching → solar about to drop →  battery vulnerable
+  • K2's reasoning: if storm hits while battery is half-full, you're fine
+    but if battery is nearly empty when storm hits, you fail. Pre-charge now?
+
+solar_time_remaining (0–99999 seconds)
+  • Meaning: how long until light hits zero (sun setting, major cloud cover)
+  • If < 60 sec: solar will be GONE SOON
+  • K2's reasoning: if solar dies in 30 seconds and you keep T4 bright,
+    city load will drain battery in minutes. Should you dim T4 now to build buffer?
+
+ttd_seconds (time to deficit)
+  • How many seconds until battery SoC hits 0% at current drain rate
+  • If < 10 sec: CRISIS NOW (dim everything except T1 or relay must activate)
+  • If > 120 sec: probably safe (solar is strong, load is light)
+
+t2_demand_factor (1.0 – 1.5)
+  • Heat/cold multiplier: extreme temps = higher industry cooling/heating load
+  • temp > 35°C → 1.50   (extreme heat, AC load spikes)
+  • temp < 5°C  → 1.50   (extreme cold, heating load spikes)
+  • K2's reasoning: if T2 normally draws 100 mA, at 1.50× it draws 150 mA.
+    That's 50% more drain on battery. Does this change your power strategy?
+
+mins_to_demand_spike (0–9999 minutes)
+  • Duck curve prediction: when will residential demand surge?
+  • Typical pattern: early morning (7–9am) and evening (6–9pm) are peaks
+  • K2's reasoning: if spike arrives in 5 minutes and battery is at 30%,
+    should you pre-dim T4 to build buffer before spike hits?
+
+market_penalty_active (true/false)
+  • Electricity price > $2/kWh — relay is EXTREMELY expensive to activate
+  • K2's reasoning: normally relay costs 500 pts, but if market is spiking,
+    maybe avoid relay at almost any cost. Dim T4 hard even if battery is OK?
+
+breakeven_ttd
+  • Economic threshold: TTD must be below this for dimming to be cheaper than relay
+  • Calculated from: relay penalty cost vs. cost of holding T4 dimmed
+
+=== YOUR ACTUAL JOB: OPTIMIZE POWER GIVEN THESE SIGNALS ===
+
+You MUST do this reasoning every cycle (it's the ML part):
+
+1. Is battery SOC dangerously low? (< 0.05)
+   → If yes: relay=1 MANDATORY (no choice)
+
+2. Will solar die soon? (solar_time_remaining < 60)
+   → If yes: you have 60 seconds to harvest before solar is gone
+   → Should you dim non-critical loads NOW to build battery buffer?
+
+3. Is a storm coming? (storm_probability > 0.6)
+   → If yes: meteorology suggests solar will drop sharply
+   → Pre-charging the battery NOW is valuable insurance
+   → What power level balances revenue vs. survivability?
+
+4. What does the duck curve say? (mins_to_demand_spike)
+   → If demand spike in 5 minutes and battery is borderline:
+   → Should you pre-dim now to handle the load spike without relay?
+
+5. Is electricity expensive? (market_penalty_active)
+   → If yes: relay activation is catastrophically expensive
+   → Avoid it even at modest battery levels?
+
+6. What's the temperature? (t2_demand_factor)
+   → Extreme temps → industry load increases → battery drain increases
+   → Should you expect different power dynamics than on moderate days?
 
 === YOUR RESPONSE MUST BE EXACTLY THIS JSON STRUCTURE ===
-{"pwm":[255,255,X,X,X,X,X,X,X,X,X,X,X,X,X,X],"relay":0,"lcd_line1":"SOC:XX% $X.XX","lcd_line2":"Score:XXXXX T4:XX%","reasoning":"one sentence"}
+{"pwm":[255,255,X,X,X,X,X,X,X,X,X,X,X,X,X,X],"relay":0,"lcd_line1":"SOC:XX% $X.XX","lcd_line2":"Score:XXXXX T4:XX%","reasoning":"brief explanation"}
 
 Rules:
 - pwm: exactly 16 integers each 0-255
 - relay: 0 or 1
-- lcd_line1 and lcd_line2: strings of 16 characters or fewer
-- reasoning: one short sentence
+- lcd_line1, lcd_line2: ≤16 chars
+- reasoning: one short sentence (mention weather if reasoning about it)
 
 DO NOT write anything before { or after }. Output the JSON and nothing else.
 """
@@ -501,7 +575,6 @@ def main() -> None:
                 "mins_to_demand_spike":  9999.0,
                 "t2_demand_factor":      1.0,
                 "dim_t4_recommended":    False,
-                "recommended_t4_pwm":    255,
                 "breakeven_ttd":         0.0,
                 "market_penalty_active": price > 2.0,
             }

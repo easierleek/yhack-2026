@@ -250,25 +250,6 @@ def relay_break_even(
     #          b) market price alone makes the relay too expensive
     dim_now = (ttd < 60.0) or market_penalty
 
-    # ── Recommended T4 PWM ───────────────────────────────────────────────────
-    # Uses absolute time thresholds so the signal stays useful regardless of
-    # how BASE_WEIGHTS are tuned (breakeven_ttd is still reported for K2 context
-    # but is no longer used to gate the dim recommendation).
-    if ttd == math.inf or ttd > 120.0:   # > 2 min to deficit: full brightness
-        recommended_t4 = 255
-    elif ttd > 60.0:                      # 1–2 min: light pre-dim
-        recommended_t4 = 180
-    elif ttd > 30.0:                      # 30–60 sec: moderate dim
-        recommended_t4 = 100
-    elif ttd > 10.0:                      # 10–30 sec: heavy dim
-        recommended_t4 = 40
-    else:                                  # < 10 sec: emergency off
-        recommended_t4 = 0
-
-    # High market price: cap T4 brightness to avoid relay even at full battery
-    if market_penalty and recommended_t4 > 150:
-        recommended_t4 = 150
-
     return {
         "dim_now":            dim_now,
         "ttd_seconds":        round(ttd if ttd != math.inf else 99999.0, 1),
@@ -277,7 +258,6 @@ def relay_break_even(
         "t4_total_dim_cost":  round(t4_total_dim_cost, 1),
         "breakeven_ttd":      round(breakeven_ttd, 1),
         "market_penalty":     market_penalty,
-        "recommended_t4":     recommended_t4,
     }
 
 
@@ -327,20 +307,19 @@ def compute_forecast(
     pressure_slope = _slope(history, "pressure_hpa")
 
     return {
-        # ── Core predictive signals ──────────────────────────────────────────
+        # ── Core predictive signals (RAW, for K2 to reason with) ──────────────
         "storm_probability":      storm_prob,
         "solar_time_remaining":   round(solar_tr  if solar_tr  != math.inf else 99999.0, 1),
         "mins_to_demand_spike":   round(mins_spike if mins_spike != 9999.0  else 9999.0,  1),
         "t2_demand_factor":       round(t2_factor, 2),
 
-        # ── Relay break-even optimizer ───────────────────────────────────────
+        # ── Economic break-even data (inputs to K2's reasoning) ────────────────
         "dim_t4_recommended":     beven["dim_now"],
-        "recommended_t4_pwm":     beven["recommended_t4"],
         "ttd_seconds":            beven["ttd_seconds"],
         "breakeven_ttd":          beven["breakeven_ttd"],
         "market_penalty_active":  beven["market_penalty"],
 
-        # ── Raw slopes (still passed to K2 for context) ──────────────────────
+        # ── Raw slopes (signals for K2 to interpret) ──────────────────────────
         "sun_slope":              round(sun_slope,      2),
         "pressure_slope":         round(pressure_slope, 4),
     }
