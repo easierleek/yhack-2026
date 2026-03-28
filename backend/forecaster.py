@@ -229,9 +229,10 @@ def relay_break_even(
     revenue = penalty_weights.get("tier4_revenue",     +10)
 
     # ── Per-second cost of keeping T4 fully dim ───────────────────────────────
-    # 10 cycles / second, 6 channels, 100% dim = 10 bands of 10%
-    dim_penalty_per_sec = d_p10 * 10 * 10 * 6       # 10 bands × 10 cycles × 6 ch
-    revenue_forgone_per_sec = revenue * 10 * 6       # 10 cycles × 6 channels
+    # 10 cycles/s, 6 channels, 100% dim = 10 bands of 10%
+    # Revenue uses * 0.1 per-cycle factor in compute_reward — must match here.
+    dim_penalty_per_sec     = d_p10 * 10 * 10 * 6          # 10 bands × 10 cycles × 6 ch = 3000
+    revenue_forgone_per_sec = revenue * 0.1 * 10 * 6       # 0.1 per-cycle × 10 cycles × 6 ch = 60
     t4_dim_cost_ps = dim_penalty_per_sec + revenue_forgone_per_sec
 
     # ── Total cost over the time until crisis ────────────────────────────────
@@ -245,24 +246,26 @@ def relay_break_even(
     market_penalty = market_price > 2.0
 
     # ── Decision ─────────────────────────────────────────────────────────────
-    # Dim if:  a) TTD is under threshold × safety margin, OR
-    #          b) market is too expensive to let the relay fire
-    dim_now = (ttd < breakeven_ttd * 1.5) or market_penalty
+    # Dim if:  a) deficit is arriving in < 60 seconds, OR
+    #          b) market price alone makes the relay too expensive
+    dim_now = (ttd < 60.0) or market_penalty
 
     # ── Recommended T4 PWM ───────────────────────────────────────────────────
-    # Gradual scale: the closer we are to crisis, the harder we dim.
-    if ttd == math.inf or ttd > breakeven_ttd * 3:
-        recommended_t4 = 255          # plenty of time — full brightness
-    elif ttd > breakeven_ttd * 1.5:
-        recommended_t4 = 180          # approaching threshold — light pre-dim
-    elif ttd > breakeven_ttd:
-        recommended_t4 = 100          # inside threshold — moderate dim
-    elif ttd > breakeven_ttd * 0.5:
-        recommended_t4 = 40           # crisis imminent — heavy dim
-    else:
-        recommended_t4 = 0            # emergency — shut T4 off
+    # Uses absolute time thresholds so the signal stays useful regardless of
+    # how BASE_WEIGHTS are tuned (breakeven_ttd is still reported for K2 context
+    # but is no longer used to gate the dim recommendation).
+    if ttd == math.inf or ttd > 120.0:   # > 2 min to deficit: full brightness
+        recommended_t4 = 255
+    elif ttd > 60.0:                      # 1–2 min: light pre-dim
+        recommended_t4 = 180
+    elif ttd > 30.0:                      # 30–60 sec: moderate dim
+        recommended_t4 = 100
+    elif ttd > 10.0:                      # 10–30 sec: heavy dim
+        recommended_t4 = 40
+    else:                                  # < 10 sec: emergency off
+        recommended_t4 = 0
 
-    # High market price: don't let T4 trigger a relay even at full battery
+    # High market price: cap T4 brightness to avoid relay even at full battery
     if market_penalty and recommended_t4 > 150:
         recommended_t4 = 150
 

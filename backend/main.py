@@ -16,6 +16,7 @@
 #    8. Push full state to dashboard
 # ============================================================
 
+import copy
 import os
 import re
 import sys
@@ -210,7 +211,9 @@ def strip_think_tags(raw: str) -> str:
         if "</think>" in cleaned:
             cleaned = cleaned[cleaned.rfind("</think>") + 8:].strip()
         else:
-            cleaned = cleaned.split("<think>")[0].strip()
+            # No closing tag: JSON lives AFTER the <think> content.
+            # Take everything after the opening tag so brace-search can find it.
+            cleaned = cleaned.split("<think>", 1)[1]
     return cleaned
 
 def extract_json(raw: str) -> dict:
@@ -243,6 +246,10 @@ SAFE_COMMAND: dict = {
     "lcd_line2": "SAFE MODE       ",
     "reasoning": "K2 unreachable — safe fallback active.",
 }
+
+def safe_command() -> dict:
+    """Always returns a deep copy so in-place PWM mutations never corrupt the template."""
+    return copy.deepcopy(SAFE_COMMAND)
 
 # ─── SYSTEM PROMPT ────────────────────────────────────────────────────────────
 SYSTEM_PROMPT = """
@@ -373,7 +380,7 @@ def main() -> None:
     prev_relay       = 0
     last_time        = time.time()
     last_k2_call     = 0.0
-    command: dict    = dict(SAFE_COMMAND)
+    command: dict    = safe_command()
     k2_calls         = 0
     last_btn_seen    = 0
 
@@ -501,7 +508,7 @@ def main() -> None:
 
             except Exception as e:
                 print(f"[K2 ERROR] {e}")
-                command = dict(SAFE_COMMAND)
+                command = safe_command()
 
         # ── 7. Hard overrides (enforced in Python, not just in the prompt) ────
 
