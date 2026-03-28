@@ -1,0 +1,15 @@
+# NEO — Nodal Energy Oracle
+# Backend Python dependencies
+# Install with: pip install -r requirements.txt
+
+# Serial communication with Arduino over USB
+pyserial>=3.5
+
+# K2 Think V2 API client (OpenAI-compatible SDK)
+openai>=1.0.0
+
+# EIA API HTTP calls
+requests>=2.31.0
+
+# Rich terminal dashboard
+rich>=13.7.0
