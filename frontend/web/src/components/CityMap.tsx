@@ -1,24 +1,27 @@
-import { useEffect, useMemo, useRef } from 'react';
-import { TIER_DEFS } from '../types/NeoState';
+import { useEffect, useRef } from 'react';
+import { INFRASTRUCTURE_NODES } from '../data/infrastructure';
+import type { InfrastructureNode } from '../data/infrastructure';
 import type { NeoState, TierKey } from '../types/NeoState';
-import { tierAvgPwm } from '../utils/pwm';
 
 type LeafletGlobal = {
   map: (element: HTMLElement, options?: Record<string, unknown>) => LeafletMap;
   tileLayer: (url: string, options?: Record<string, unknown>) => LeafletLayer;
   layerGroup: () => LeafletLayerGroup;
   marker: (latLng: [number, number], options?: Record<string, unknown>) => LeafletMarker;
-  circleMarker: (latLng: [number, number], options?: Record<string, unknown>) => LeafletMarker;
   divIcon: (options?: Record<string, unknown>) => unknown;
   polyline: (latLngs: [number, number][], options?: Record<string, unknown>) => LeafletLayer;
+  canvas: (options?: Record<string, unknown>) => unknown;
+  control: {
+    zoom: (options?: Record<string, unknown>) => { addTo: (target: LeafletMap) => void };
+  };
 };
 
 type LeafletMap = {
   setView: (latLng: [number, number], zoom: number) => LeafletMap;
   setMaxBounds: (bounds: [[number, number], [number, number]]) => LeafletMap;
-  createPane: (name: string) => HTMLElement;
-  getPane: (name: string) => HTMLElement | undefined;
+  invalidateSize: () => void;
   remove: () => void;
+  removeLayer: (layer: LeafletLayerGroup) => void;
 };
 
 type LeafletLayer = {
@@ -30,91 +33,71 @@ type LeafletLayerGroup = LeafletLayer & {
 };
 
 type LeafletMarker = LeafletLayer & {
-  bindPopup: (content: string) => LeafletMarker;
   on: (event: string, handler: () => void) => LeafletMarker;
+  setIcon?: (icon: unknown) => LeafletMarker;
 };
 
-const NEW_HAVEN_CENTER: [number, number] = [41.3083, -72.9279];
-const NEW_HAVEN_BOUNDS: [[number, number], [number, number]] = [
-  [41.258, -73.015],
-  [41.365, -72.845],
-];
+type RoadElement =
+  | { type: 'node'; id: number; lat: number; lon: number }
+  | { type: 'way'; id: number; nodes: number[]; tags?: { highway?: string } };
 
-const TIER_STYLE: Record<TierKey, { color: string; border: string; shadow: string }> = {
-  T1: { color: '#7ab3ff', border: '#d6eeff', shadow: '#274f7f' },
-  T2: { color: '#ff6f7d', border: '#ffd8de', shadow: '#7f2d3b' },
-  T3: { color: '#4ec39c', border: '#d6fff1', shadow: '#1d624f' },
-  T4: { color: '#f4bc57', border: '#fff1c7', shadow: '#7a5924' },
+type RoadPayload = {
+  fetchedAt: string;
+  data: {
+    elements: RoadElement[];
+  };
 };
 
-interface ZoneDef {
-  tier: TierKey;
-  channel: number;
-  label: string;
-  sublabel: string;
-  position: [number, number];
-  footprint: 'large' | 'medium' | 'small';
-}
-
-const ZONES: ZoneDef[] = [
-  { tier: 'T1', channel: 0, label: 'Yale New Haven', sublabel: 'York Street', position: [41.3045436, -72.9357954], footprint: 'large' },
-  { tier: 'T1', channel: 1, label: 'St. Raphael', sublabel: 'Chapel Campus', position: [41.3102538, -72.9431532], footprint: 'medium' },
-
-  { tier: 'T2', channel: 2, label: 'English Station', sublabel: 'Power Plant', position: [41.3199, -72.8978], footprint: 'medium' },
-  { tier: 'T2', channel: 3, label: 'Harbor Substation', sublabel: 'Utility', position: [41.2876, -72.9038], footprint: 'small' },
-  { tier: 'T2', channel: 4, label: 'East Shore Water', sublabel: 'Utility', position: [41.2772, -72.8798], footprint: 'small' },
-
-  { tier: 'T3', channel: 5, label: 'East Rock', sublabel: 'Residential', position: [41.3248, -72.9151], footprint: 'medium' },
-  { tier: 'T3', channel: 6, label: 'Fair Haven', sublabel: 'Residential', position: [41.3157, -72.8928], footprint: 'medium' },
-  { tier: 'T3', channel: 7, label: 'Westville', sublabel: 'Residential', position: [41.3112, -72.9664], footprint: 'medium' },
-  { tier: 'T3', channel: 8, label: 'Beaver Hills', sublabel: 'Residential', position: [41.3198, -72.9514], footprint: 'small' },
-  { tier: 'T3', channel: 9, label: 'Wooster Sq', sublabel: 'Residential', position: [41.3079, -72.9124], footprint: 'small' },
-
-  { tier: 'T4', channel: 10, label: 'Broadway', sublabel: 'Commercial', position: [41.3087, -72.9289], footprint: 'small' },
-  { tier: 'T4', channel: 11, label: 'Whalley', sublabel: 'Commercial', position: [41.3116, -72.9498], footprint: 'small' },
-  { tier: 'T4', channel: 12, label: 'Long Wharf', sublabel: 'Commercial', position: [41.2859, -72.9238], footprint: 'medium' },
-  { tier: 'T4', channel: 13, label: 'State Street', sublabel: 'Commercial', position: [41.3144, -72.9093], footprint: 'small' },
-  { tier: 'T4', channel: 14, label: 'The Hill', sublabel: 'Commercial', position: [41.2997, -72.9346], footprint: 'medium' },
-  { tier: 'T4', channel: 15, label: 'Chapel West', sublabel: 'Commercial', position: [41.3117, -72.9567], footprint: 'small' },
+const BOUNDS: [[number, number], [number, number]] = [
+  [41.27, -72.97],
+  [41.35, -72.88],
 ];
 
-const SOURCE_NODES = [
-  { label: 'Solar', value: 'solar_ma', position: [41.3345, -72.9788] as [number, number], color: '#ffd46f' },
-  { label: 'Grid', value: 'load_ma', position: [41.2748, -72.8768] as [number, number], color: '#98a8ff' },
-] as const;
+const ROAD_STYLES: Record<string, { color: string; weight: number; z: number }> = {
+  motorway: { color: '#E05555', weight: 4, z: 8 },
+  motorway_link: { color: '#E05555', weight: 4, z: 7 },
+  trunk: { color: '#E05555', weight: 4, z: 8 },
+  trunk_link: { color: '#E05555', weight: 4, z: 7 },
+  primary: { color: '#4A90D9', weight: 4, z: 6 },
+  primary_link: { color: '#4A90D9', weight: 4, z: 5 },
+  secondary: { color: '#3AAA6A', weight: 4, z: 4 },
+  secondary_link: { color: '#3AAA6A', weight: 4, z: 3 },
+  tertiary: { color: '#C49A3C', weight: 4, z: 3 },
+  tertiary_link: { color: '#C49A3C', weight: 4, z: 2 },
+};
+
+let roadsCachePromise: Promise<RoadPayload> | null = null;
 
 function getLeaflet(): LeafletGlobal | null {
   return (window as Window & { L?: LeafletGlobal }).L ?? null;
 }
 
-function footprintClass(footprint: ZoneDef['footprint']) {
-  if (footprint === 'large') return 'zone-large';
-  if (footprint === 'medium') return 'zone-medium';
-  return 'zone-small';
+function fetchRoads(): Promise<RoadPayload> {
+  if (!roadsCachePromise) {
+    roadsCachePromise = fetch('/neo-roads.json').then(async (response) => {
+      if (!response.ok) throw new Error(`Road data failed: ${response.status}`);
+      return await response.json() as RoadPayload;
+    });
+  }
+
+  return roadsCachePromise;
 }
 
-function zoneIconHtml(zone: ZoneDef, state: NeoState, isSelected: boolean) {
-  const tierStyle = TIER_STYLE[zone.tier];
-  const brightness = Math.max(0.42, (state.pwm[zone.channel] ?? 0) / 255);
-  const pct = Math.round(((state.pwm[zone.channel] ?? 0) / 255) * 100);
-  const showLabel = zone.tier === 'T1' || zone.tier === 'T2';
+function nodeCardHtml(node: InfrastructureNode, state: NeoState, selectedNodeId: string | null) {
+  const pct = Math.round(((state.pwm[node.channel] ?? 0) / 255) * 100);
+  const isOffline = pct <= 5;
+  const selectedClass = selectedNodeId === node.id ? 'n-card-selected' : '';
 
   return `
-    <div
-      class="neo-zone ${footprintClass(zone.footprint)} ${isSelected ? 'zone-selected' : ''}"
-      style="
-        --zone-fill:${tierStyle.color};
-        --zone-border:${tierStyle.border};
-        --zone-shadow:${tierStyle.shadow};
-        --zone-opacity:${brightness};
-      "
-    >
-      <div class="neo-zone-depth"></div>
-      <div class="neo-zone-face">
-        ${showLabel ? `<div class="neo-zone-title">${zone.label}</div>` : ''}
-        ${showLabel ? `<div class="neo-zone-subtitle">${zone.sublabel}</div>` : ''}
-        <div class="neo-zone-percent">${pct}%</div>
+    <div class="n-card n-${node.tier.toLowerCase()} ${selectedClass}" data-id="${node.id}">
+      <div class="n-head">
+        <span class="n-tier">${node.tier}</span>
+        <span class="n-pct">${pct}%</span>
       </div>
+      <div class="n-name">${node.name}</div>
+      <div class="n-sub">${node.sub}</div>
+      <div class="n-bar"><div class="n-bar-fill" style="width:${pct}%"></div></div>
+      <div class="n-status ${isOffline ? 'n-offline' : 'n-online'}">${isOffline ? '● OFFLINE' : '● ONLINE'}</div>
     </div>
   `;
 }
@@ -122,151 +105,224 @@ function zoneIconHtml(zone: ZoneDef, state: NeoState, isSelected: boolean) {
 interface Props {
   state: NeoState;
   selectedZone: TierKey | null;
+  selectedNodeId: string | null;
   onSelectZone: (key: TierKey | null) => void;
+  onSelectNode: (node: InfrastructureNode | null) => void;
 }
 
-export function CityMap({ state, selectedZone, onSelectZone }: Props) {
+export function CityMap({ state, selectedNodeId, onSelectZone, onSelectNode }: Props) {
   const mapRef = useRef<HTMLDivElement>(null);
-  const leafletMapRef = useRef<LeafletMap | null>(null);
-  const infrastructureLayerRef = useRef<LeafletLayerGroup | null>(null);
-  const sourceLayerRef = useRef<LeafletLayerGroup | null>(null);
-  const flowLayerRef = useRef<LeafletLayerGroup | null>(null);
+  const mapInstanceRef = useRef<LeafletMap | null>(null);
+  const roadsLayerRef = useRef<LeafletLayerGroup | null>(null);
+  const nodeLayerRef = useRef<LeafletLayerGroup | null>(null);
+  const markerRefs = useRef<Record<string, LeafletMarker>>({});
+  const markerSignatureRef = useRef<Record<string, string>>({});
+  const loadingRef = useRef<HTMLDivElement>(null);
+  const selectNodeRef = useRef(onSelectNode);
+  const selectZoneRef = useRef(onSelectZone);
+  const stateRef = useRef(state);
+  const selectedNodeIdRef = useRef(selectedNodeId);
+
+  useEffect(() => {
+    selectNodeRef.current = onSelectNode;
+    selectZoneRef.current = onSelectZone;
+  }, [onSelectNode, onSelectZone]);
+
+  useEffect(() => {
+    stateRef.current = state;
+    selectedNodeIdRef.current = selectedNodeId;
+  }, [selectedNodeId, state]);
 
   useEffect(() => {
     const leaflet = getLeaflet();
-    if (!leaflet || !mapRef.current || leafletMapRef.current) return;
+    if (!leaflet || !mapRef.current || mapInstanceRef.current) return;
 
     const map = leaflet.map(mapRef.current, {
-      zoomControl: true,
-      attributionControl: true,
-      dragging: true,
-      scrollWheelZoom: true,
-      doubleClickZoom: false,
-    }).setView(NEW_HAVEN_CENTER, 13);
+      center: [41.308, -72.928],
+      zoom: 14,
+      minZoom: 13,
+      maxZoom: 17,
+      preferCanvas: true,
+      zoomControl: false,
+      attributionControl: false,
+      maxBounds: BOUNDS,
+      maxBoundsViscosity: 1.0,
+    }).setView([41.308, -72.928], 14);
 
-    map.setMaxBounds(NEW_HAVEN_BOUNDS);
+    map.setMaxBounds(BOUNDS);
+    map.invalidateSize();
 
-    leaflet
-      .tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxZoom: 18,
-        minZoom: 12,
-        className: 'neo-tile-layer',
-      })
-      .addTo(map);
+    let tileErrFired = false;
+    const stadiaLayer = leaflet.tileLayer(
+      'https://tiles.stadiamaps.com/tiles/alidade_smooth/{z}/{x}/{y}{r}.png',
+      { maxZoom: 17, attribution: '© Stadia Maps' },
+    );
 
-    map.createPane('flows');
-    const flowsPane = map.getPane('flows');
-    if (flowsPane) flowsPane.style.zIndex = '440';
+    stadiaLayer.addTo(map);
+    leaflet.control.zoom({ position: 'topleft' }).addTo(map);
 
-    infrastructureLayerRef.current = leaflet.layerGroup().addTo(map) as LeafletLayerGroup;
-    sourceLayerRef.current = leaflet.layerGroup().addTo(map) as LeafletLayerGroup;
-    flowLayerRef.current = leaflet.layerGroup().addTo(map) as LeafletLayerGroup;
-    leafletMapRef.current = map;
+    roadsLayerRef.current = leaflet.layerGroup().addTo(map) as LeafletLayerGroup;
+    nodeLayerRef.current = leaflet.layerGroup().addTo(map) as LeafletLayerGroup;
+    mapInstanceRef.current = map;
+
+    // Some leaflet typings are intentionally loose here.
+    (stadiaLayer as unknown as { on?: (event: string, handler: () => void) => void }).on?.('tileerror', () => {
+      if (tileErrFired) return;
+      tileErrFired = true;
+      map.removeLayer(stadiaLayer as unknown as LeafletLayerGroup);
+      leaflet.tileLayer(
+        'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+        { maxZoom: 17, subdomains: 'abcd', attribution: '© CartoDB' },
+      ).addTo(map);
+    });
 
     return () => {
-      flowLayerRef.current = null;
-      sourceLayerRef.current = null;
-      infrastructureLayerRef.current = null;
-      leafletMapRef.current?.remove();
-      leafletMapRef.current = null;
+      roadsLayerRef.current = null;
+      nodeLayerRef.current = null;
+      mapInstanceRef.current?.remove();
+      mapInstanceRef.current = null;
     };
   }, []);
 
   useEffect(() => {
     const leaflet = getLeaflet();
-    const infrastructureLayer = infrastructureLayerRef.current;
-    const sourceLayer = sourceLayerRef.current;
-    const flowLayer = flowLayerRef.current;
-    if (!leaflet || !infrastructureLayer || !sourceLayer || !flowLayer) return;
+    const roadsLayer = roadsLayerRef.current;
+    if (!leaflet || !roadsLayer) return;
 
-    infrastructureLayer.clearLayers();
-    sourceLayer.clearLayers();
-    flowLayer.clearLayers();
+    let cancelled = false;
+    roadsLayer.clearLayers();
+    if (loadingRef.current) loadingRef.current.classList.add('visible');
 
-    ZONES.forEach((zone) => {
-      const marker = leaflet.marker(zone.position, {
+    const renderer = leaflet.canvas({ padding: 0.2 });
+
+    void fetchRoads().then(async (payload) => {
+      if (cancelled) return;
+
+      const nodeCoord: Record<number, [number, number]> = {};
+      payload.data.elements.forEach((element) => {
+        if (element.type === 'node') nodeCoord[element.id] = [element.lat, element.lon];
+      });
+
+      const ways = payload.data.elements
+        .filter((element): element is Extract<RoadElement, { type: 'way' }> => element.type === 'way' && Boolean(element.tags?.highway && ROAD_STYLES[element.tags.highway]))
+        .sort((a, b) => ROAD_STYLES[a.tags!.highway!].z - ROAD_STYLES[b.tags!.highway!].z);
+
+      const chunkSize = 100;
+      for (let start = 0; start < ways.length; start += chunkSize) {
+        if (cancelled) return;
+        const chunk = ways.slice(start, start + chunkSize);
+        chunk.forEach((way) => {
+          const style = ROAD_STYLES[way.tags!.highway!];
+          const coords = way.nodes.map((id) => nodeCoord[id]).filter(Boolean);
+          if (coords.length < 2) return;
+          leaflet.polyline(coords, {
+            color: style.color,
+            weight: style.weight,
+            lineCap: 'round',
+            lineJoin: 'round',
+            opacity: 0.65,
+            renderer,
+            interactive: false,
+            smoothFactor: 1,
+          }).addTo(roadsLayer);
+        });
+
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      }
+
+      if (!cancelled && loadingRef.current) loadingRef.current.classList.remove('visible');
+    }).catch(() => {
+      if (!cancelled && loadingRef.current) loadingRef.current.classList.remove('visible');
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const leaflet = getLeaflet();
+    const nodeLayer = nodeLayerRef.current;
+    if (!leaflet || !nodeLayer) return;
+
+    INFRASTRUCTURE_NODES.forEach((node) => {
+      if (markerRefs.current[node.id]) {
+        return;
+      }
+
+      const marker = leaflet.marker([node.lat, node.lng], {
         icon: leaflet.divIcon({
-          className: 'neo-zone-wrapper',
-          html: zoneIconHtml(zone, state, selectedZone === zone.tier),
-          iconSize: zone.footprint === 'large' ? [124, 124] : zone.footprint === 'medium' ? [110, 110] : [96, 96],
-          iconAnchor: zone.footprint === 'large' ? [62, 62] : zone.footprint === 'medium' ? [55, 55] : [48, 48],
+          className: '',
+          html: nodeCardHtml(node, stateRef.current, selectedNodeIdRef.current),
+          iconSize: [152, 86],
+          iconAnchor: [76, 43],
         }),
       });
 
       marker
-        .bindPopup(`${zone.label} · ${zone.sublabel}`)
-        .on('click', () => onSelectZone(selectedZone === zone.tier ? null : zone.tier))
-        .addTo(infrastructureLayer);
-    });
-
-    const flowColor = state.relay === 0 ? '#ffd46f' : '#98a8ff';
-    const sourcePosition = state.relay === 0 ? SOURCE_NODES[0].position : SOURCE_NODES[1].position;
-
-    Object.entries(
-      TIER_DEFS.reduce<Record<TierKey, [number, number]>>((acc, tier) => {
-        const tierZones = ZONES.filter((zone) => zone.tier === tier.key);
-        const lat = tierZones.reduce((sum, zone) => sum + zone.position[0], 0) / tierZones.length;
-        const lng = tierZones.reduce((sum, zone) => sum + zone.position[1], 0) / tierZones.length;
-        acc[tier.key] = [lat, lng];
-        return acc;
-      }, {} as Record<TierKey, [number, number]>),
-    ).forEach(([tierKey, latLng]) => {
-      const avgPwm = tierAvgPwm(state.pwm, tierKey as TierKey) / 255;
-      leaflet.polyline([sourcePosition, latLng], {
-        pane: 'flows',
-        color: flowColor,
-        weight: 3 + avgPwm * 4,
-        opacity: 0.16 + avgPwm * 0.34,
-        lineCap: 'round',
-        dashArray: '10 10',
-      }).addTo(flowLayer);
-    });
-
-    SOURCE_NODES.forEach((node) => {
-      const value = node.value === 'solar_ma' ? state.solar_ma : state.load_ma;
-      leaflet
-        .circleMarker(node.position, {
-          radius: 11,
-          color: node.color,
-          weight: 2,
-          fillColor: '#0b1118',
-          fillOpacity: 0.92,
+        .on('click', () => {
+          selectNodeRef.current(node);
+          selectZoneRef.current(node.tier);
         })
-        .bindPopup(`${node.label} · ${Math.round(value)} mA`)
-        .addTo(sourceLayer);
-    });
-  }, [onSelectZone, selectedZone, state]);
+        .addTo(nodeLayer);
 
-  const legend = useMemo(() => (
-    TIER_DEFS.map((tier) => {
-      const avgPwm = Math.round((tierAvgPwm(state.pwm, tier.key) / 255) * 100);
-      return {
-        key: tier.key,
-        label: tier.label,
-        color: TIER_STYLE[tier.key].color,
-        opacity: Math.max(0.35, avgPwm / 100),
-        pct: avgPwm,
-      };
-    })
-  ), [state.pwm]);
+      markerRefs.current[node.id] = marker;
+      markerSignatureRef.current[node.id] = `${selectedNodeIdRef.current === node.id}:${Math.round(((stateRef.current.pwm[node.channel] ?? 0) / 255) * 100)}`;
+    });
+    return () => {
+      markerRefs.current = {};
+      markerSignatureRef.current = {};
+      nodeLayer.clearLayers();
+    };
+  }, []);
+
+  useEffect(() => {
+    const leaflet = getLeaflet();
+    if (!leaflet) return;
+
+    INFRASTRUCTURE_NODES.forEach((node) => {
+      const marker = markerRefs.current[node.id];
+      if (!marker?.setIcon) return;
+      const nextSignature = `${selectedNodeId === node.id}:${Math.round(((state.pwm[node.channel] ?? 0) / 255) * 100)}`;
+      if (markerSignatureRef.current[node.id] === nextSignature) {
+        return;
+      }
+
+      marker.setIcon(leaflet.divIcon({
+        className: '',
+        html: nodeCardHtml(node, state, selectedNodeId),
+        iconSize: [152, 86],
+        iconAnchor: [76, 43],
+      }));
+      markerSignatureRef.current[node.id] = nextSignature;
+    });
+  }, [selectedNodeId, state]);
 
   return (
-    <div className="leaflet-map-shell">
-      <div ref={mapRef} className="leaflet-map-canvas" />
+    <div className="leaflet-map-shell neo-map-shell">
+      <div ref={mapRef} className="leaflet-map-canvas neo-map-canvas" />
 
-      <div className="map-static-overlay tier-legend">
-        <div className="map-overlay-title">Yale Grid Tiers</div>
-        {legend.map((tier) => (
-          <div key={tier.key} className="tier-legend-row">
-            <span className="tier-swatch" style={{ background: tier.color, opacity: tier.opacity }} />
-            <span className="tier-name">{tier.key} · {tier.label}</span>
-            <span className="tier-pct mono">{tier.pct}%</span>
-          </div>
-        ))}
+      <div ref={loadingRef} className="neo-road-loading">
+        <div className="neo-road-spinner" />
+        <div className="neo-road-loading-text">Loading road overlay...</div>
       </div>
 
-      <div className="map-static-overlay map-status">
-        <span className="mono">{state.relay === 0 ? 'SOLAR PRIORITY ACTIVE' : 'STATE GRID ASSIST ACTIVE'}</span>
+      <div className="map-static-overlay neo-tier-legend">
+        <div className="map-overlay-title">Grid Tiers</div>
+        <div className="tier-legend-row"><span className="tier-swatch" style={{ background: '#4A90D9', opacity: 1 }} /><span className="tier-name">T1</span><span className="tier-pct">Critical</span></div>
+        <div className="tier-legend-row"><span className="tier-swatch" style={{ background: '#E05555', opacity: 1 }} /><span className="tier-name">T2</span><span className="tier-pct">Utility</span></div>
+        <div className="tier-legend-row"><span className="tier-swatch" style={{ background: '#3AAA6A', opacity: 1 }} /><span className="tier-name">T3</span><span className="tier-pct">Residential</span></div>
+        <div className="tier-legend-row"><span className="tier-swatch" style={{ background: '#C49A3C', opacity: 1 }} /><span className="tier-name">T4</span><span className="tier-pct">Commercial</span></div>
+        <div className="neo-legend-divider" />
+        <div className="map-overlay-title">Roads</div>
+        <div className="neo-road-legend-row"><span className="neo-road-line" style={{ background: '#E05555' }} /><span className="neo-road-label">Motorway / Trunk</span></div>
+        <div className="neo-road-legend-row"><span className="neo-road-line" style={{ background: '#4A90D9' }} /><span className="neo-road-label">Primary</span></div>
+        <div className="neo-road-legend-row"><span className="neo-road-line" style={{ background: '#3AAA6A' }} /><span className="neo-road-label">Secondary</span></div>
+        <div className="neo-road-legend-row"><span className="neo-road-line" style={{ background: '#C49A3C' }} /><span className="neo-road-label">Tertiary</span></div>
+      </div>
+
+      <div className="map-static-overlay neo-map-status">
+        <span className="mono">{state.relay === 0 ? 'SOLAR PRIORITY ACTIVE' : 'GRID ASSIST ACTIVE'}</span>
       </div>
     </div>
   );

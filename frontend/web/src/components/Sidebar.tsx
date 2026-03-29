@@ -1,3 +1,4 @@
+import type { InfrastructureNode } from '../data/infrastructure';
 import type { NeoState, TierKey } from '../types/NeoState';
 import { TIER_DEFS } from '../types/NeoState';
 import { tierAvgPwm } from '../utils/pwm';
@@ -11,6 +12,7 @@ import { ReasoningFeed } from './sidebar/ReasoningFeed';
 interface Props {
   state: NeoState;
   selectedZone: TierKey | null;
+  selectedNode: InfrastructureNode | null;
   onClearSelection: () => void;
 }
 
@@ -37,9 +39,10 @@ const DETAIL_COPY: Record<TierKey, { title: string; description: string; emphasi
   },
 };
 
-export function Sidebar({ state, selectedZone, onClearSelection }: Props) {
+export function Sidebar({ state, selectedZone, selectedNode, onClearSelection }: Props) {
   const detailTier = selectedZone ? TIER_DEFS.find((tier) => tier.key === selectedZone) : null;
   const detailPwm = detailTier ? Math.round((tierAvgPwm(state.pwm, detailTier.key) / 255) * 100) : null;
+  const nodePwm = selectedNode ? Math.round(((state.pwm[selectedNode.channel] ?? 0) / 255) * 100) : null;
 
   return (
     <div className="info-panel-content">
@@ -76,6 +79,28 @@ export function Sidebar({ state, selectedZone, onClearSelection }: Props) {
             <Stat label="Policy" value={state.active_policy || 'None'} />
           </div>
           <p className="tier-emphasis">{DETAIL_COPY[detailTier.key].emphasis}</p>
+        </section>
+      )}
+
+      {selectedNode && nodePwm !== null && (
+        <section className="tier-focus card-surface animate-fade-in">
+          <div className="tier-focus-header">
+            <div>
+              <p className="eyebrow">Infrastructure Detail</p>
+              <h3>{selectedNode.name}</h3>
+            </div>
+            <button type="button" className="ghost-button" onClick={onClearSelection}>
+              Clear
+            </button>
+          </div>
+          <p className="tier-copy">{selectedNode.description}</p>
+          <div className="tier-stats-grid">
+            <Stat label="Tier" value={selectedNode.tier} />
+            <Stat label="Load" value={`${nodePwm}%`} />
+            <Stat label="District" value={selectedNode.district} />
+            <Stat label="Role" value={selectedNode.role} />
+          </div>
+          <p className="tier-emphasis">{selectedNode.recommendedAction}</p>
         </section>
       )}
 
