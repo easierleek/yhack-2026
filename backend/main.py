@@ -110,6 +110,19 @@ except ImportError:
         _start_ws = lambda: None
         print("[WARN] ws_server.py not found — web UI disabled.")
 
+# ── Mayor API (optional — for mayor directive chat) ───────────────────────────
+try:
+    from frontend.mayor_api import start_mayor_api as _start_mayor_api
+    _MAYOR_API = True
+except ImportError:
+    try:
+        from mayor_api import start_mayor_api as _start_mayor_api
+        _MAYOR_API = True
+    except ImportError:
+        _MAYOR_API = False
+        _start_mayor_api = lambda **kw: None
+        print("[WARN] mayor_api.py not found — mayor chat disabled.")
+
 # Policy engine is an addon — silently disabled if not present
 try:
     from backend.policy_engine import PolicyEngine
@@ -692,6 +705,18 @@ def main() -> None:
     if _WS_AVAILABLE:
         _start_ws(host="localhost", port=8765)
         time.sleep(0.1)   # allow asyncio loop to initialise before first broadcast
+
+    # ── Mayor API thread ───────────────────────────────────────────────────────
+    if _MAYOR_API:
+        mayor_thread = threading.Thread(
+            target=_start_mayor_api,
+            kwargs={"host": "0.0.0.0", "port": 5000, "threaded": True},
+            daemon=True,
+            name="neo-mayor-api"
+        )
+        mayor_thread.start()
+        time.sleep(0.1)
+        print("[NEO] Mayor API started on http://localhost:5000")
 
     # ── Dashboard thread ───────────────────────────────────────────────────────
     if _DASH:
