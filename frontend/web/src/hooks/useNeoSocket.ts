@@ -2,10 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { DEFAULT_STATE } from '../types/NeoState';
 import type { NeoState } from '../types/NeoState';
 
-const WS_URL =
-  location.hostname === 'localhost' || location.hostname === '127.0.0.1'
-    ? 'ws://localhost:8765/ws'
-    : `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
+const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 10000;
 

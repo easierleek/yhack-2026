@@ -47,12 +47,7 @@ export function MayorChat({ state, onDirective }: MayorChatProps) {
     setIsLoading(true);
 
     try {
-      const apiUrl =
-        typeof window !== 'undefined'
-          ? `http://${window.location.hostname}:5000/api/mayor-directive`
-          : 'http://localhost:5000/api/mayor-directive';
-
-      const response = await fetch(apiUrl, {
+      const response = await fetch('/api/mayor-directive', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
