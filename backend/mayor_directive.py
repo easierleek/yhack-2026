@@ -63,7 +63,21 @@ def parse_mayor_directive(directive: str, current_state: dict[str, Any]) -> dict
     directive_lower = directive.lower()
     
     # Pre-built responses for common directives
-    if any(word in directive_lower for word in ['heat', 'hot', 'ac', 'cool']):
+    if any(word in directive_lower for word in ['blackout', 'warning', 'crisis', 'conserve', 'emergency']):
+        return {
+            "interpretation": "Rolling blackout warning - aggressive conservation",
+            "strategy": "Extreme dimming of non-critical loads, protect hospitals and utilities only",
+            "tier_adjustments": {
+                "T1": "Maintain 255 (hospitals must survive at all costs)",
+                "T2": "Maintain 255 (utilities critical for infrastructure)",
+                "T3": "Reduce to 50 (minimal residential lighting only)",
+                "T4": "Reduce to 0 (commercial completely dark)",
+            },
+            "expected_outcome": "Severe conservation. Commercial dark, residential minimal. Battery protected.",
+            "warning": "Massive penalty for T3 and T4 dimming, but relay cost avoided.",
+        }
+    
+    elif any(word in directive_lower for word in ['heat', 'hot', 'ac', 'cool']):
         return {
             "interpretation": "Heatwave - maximize residential AC and utilities",
             "strategy": "Increase T2 and T3 to max despite load, dim T4 commercial hard",
@@ -91,20 +105,6 @@ def parse_mayor_directive(directive: str, current_state: dict[str, Any]) -> dict
             "warning": "None - this is a relief directive.",
         }
     
-    elif any(word in directive_lower for word in ['blackout', 'warning', 'crisis', 'conserve']):
-        return {
-            "interpretation": "Rolling blackout warning - aggressive conservation",
-            "strategy": "Extreme dimming of non-critical loads, protect hospitals and utilities only",
-            "tier_adjustments": {
-                "T1": "Maintain 255 (hospitals must survive at all costs)",
-                "T2": "Maintain 255 (utilities critical for infrastructure)",
-                "T3": "Reduce to 50 (minimal residential lighting only)",
-                "T4": "Reduce to 0 (commercial completely dark)",
-            },
-            "expected_outcome": "Severe conservation. Commercial dark, residential minimal. Battery protected.",
-            "warning": "Massive penalty for T3 and T4 dimming, but relay cost avoided.",
-        }
-    
     elif any(word in directive_lower for word in ['solar', 'subsidy', 'renewable']):
         return {
             "interpretation": "Solar subsidy event - maximize renewable usage",
@@ -119,7 +119,7 @@ def parse_mayor_directive(directive: str, current_state: dict[str, Any]) -> dict
             "warning": "Only effective during high solar hours - don't rely after sunset.",
         }
     
-    elif any(word in directive_lower for word in ['earthquake', 'seismic', 'lockdown', 'emergency']):
+    elif any(word in directive_lower for word in ['earthquake', 'seismic', 'lockdown']):
         return {
             "interpretation": "Emergency lockdown - prioritize critical infrastructure",
             "strategy": "Activate relay, lock down T1/T2 at max, minimize civilian load",
