@@ -521,7 +521,12 @@
 }
 
 .mayor-chat-panel {
-  left: 24px;
+  right: 24px;
+  left: auto;
+}
+
+.mayor-chat-panel .floating-resize-handle {
+  left: 0;
   right: auto;
 }
 
@@ -536,8 +541,8 @@
 }
 
 .fab-chat {
-  left: 1.6vw;
-  right: auto;
+  right: 7.2vw;
+  left: auto;
 }
 
 .fab-chat-icon {
