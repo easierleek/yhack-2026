@@ -1,6 +1,6 @@
 [build]
 builder = "nixpacks"
-buildCommand = "pip3 install -r requirements.txt && cd frontend/web && npm ci && npm run build"
+buildCommand = "python3 -m pip install --break-system-packages -r requirements.txt && cd frontend/web && npm ci && npm run build"
 
 [deploy]
 startCommand = "python3 server.py"
