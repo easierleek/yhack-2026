@@ -308,46 +308,22 @@ def _arduino_loop(port: str) -> None:
                 fmt = parsed['format']
 
                 if fmt == 'A':
-                    load_ma    = parsed['load_ma']
-                    power_w    = parsed['power_w']
-                    # Derive temp from power dissipation — more current = warmer components.
-                    temp_c = round(20.0 + power_w * 40, 1)
-                    _state['load_ma']      = load_ma
-                    # light is NOT set here — Format A firmware doesn't read LDR.
-                    # sim_loop owns light so it smoothly tracks the solar cycle.
-                    _state['temp_c']       = temp_c
-                    _state['pressure_hpa'] = 1013.25  # not measured by this firmware
-                    # solar_ma: keep simulation value (no dedicated solar sensor in this fw)
-                    solar_ma = _state['solar_ma']
-                    _state['relay'] = 1 if load_ma > solar_ma * 0.8 else 0
+                    power_w = parsed['power_w']
+                    # sim_loop owns load_ma, relay, pwm — only update temp here
+                    _state['temp_c']       = round(20.0 + power_w * 40, 1)
+                    _state['pressure_hpa'] = 1013.25
 
                 else:   # fmt == 'B'
+                    # arduino_loop owns ONLY physical sensor readings.
+                    # sim_loop owns solar_ma, load_ma, relay, pwm — don't touch them here.
                     _state['light']        = parsed['light']
                     _state['temp_c']       = parsed['temp_c']
                     _state['pressure_hpa'] = parsed['pressure_hpa']
-                    _state['solar_ma']     = parsed['solar_ma']
-                    _state['load_ma']      = parsed['load_ma']
                     _state['pot1']         = parsed['pot1']
                     _state['pot2']         = parsed['pot2']
                     _state['tilt']         = parsed['tilt']
                     _state['button']       = parsed['button']
-                    solar_ma = parsed['solar_ma']
-                    load_ma  = parsed['load_ma']
-                    _state['relay'] = 1 if solar_ma < load_ma * 0.8 else 0
-
-                # sim_hour is owned by sim_loop — don't overwrite it here
-
-                # Drift battery SOC
-                h = _state['sim_hour']
-                surplus = _state['solar_ma'] - _state['load_ma']
-                soc = max(0.05, min(1.0, _state['battery_soc'] + surplus * 0.0000005))
-                _state['battery_soc'] = round(soc, 4)
-
-                # Recompute per-building PWM unless mayor directive is active
-                if time.time() > _policy_lock_until:
-                    _state['pwm'] = _compute_pwm(
-                        _state['solar_ma'], _state['load_ma'], soc, h, _state['light']
-                    )
+                    # button press: relay toggle handled by sim_loop via state
 
                 payload = json.dumps(_state)
 
