@@ -525,41 +525,6 @@
   background: linear-gradient(180deg, #ffd37f, #f4bc57);
 }
 
-/* Mayor Chat FAB */
-.fab-chat {
-  left: 24px;
-  right: auto;
-  background: rgba(91, 255, 160, 0.15);
-  border-color: rgba(91, 255, 160, 0.3);
-  font-size: 24px;
-}
-
-.fab-chat:hover {
-  border-color: rgba(91, 255, 160, 0.5);
-  background: rgba(91, 255, 160, 0.2);
-}
-
-.fab-chat-icon {
-  font-size: 28px;
-}
-
-.mayo-chat-panel {
-  left: 24px !important;
-  right: auto !important;
-}
-
-.mayor-chat-scroll {
-  display: flex !important;
-  flex-direction: column !important;
-  padding: 0 !important;
-  background: transparent !important;
-}
-
-.mayor-chat-scroll > * {
-  width: 100%;
-  height: 100%;
-}
-
 @media (max-width: 900px) {
   .app-header {
     padding: 0 14px;
