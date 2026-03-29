@@ -114,6 +114,17 @@ sensor_manager = None
 k2_client = None
 decision_store = None
 
+# ─── CONFIG (all values come from .env) ───────────────────────────────────────
+# MUST define these BEFORE trying to initialize K2Client
+SERIAL_PORT      = os.environ.get("NEO_SERIAL_PORT",  "COM3")
+BAUD_RATE        = 9600
+K2_API_KEY       = os.environ.get("K2_API_KEY",       "")
+K2_BASE_URL      = "https://api.k2think.ai/v1"
+K2_MODEL         = "MBZUAI-IFM/K2-Think-v2"
+K2_CALL_INTERVAL = float(os.environ.get("K2_CALL_INTERVAL", "2.0"))
+SIM_SPEED        = float(os.environ.get("SIM_SPEED",        "60"))
+LOOP_MS          = 100   # target control loop period in milliseconds
+
 if _SENSOR_MGR:
     try:
         sensor_manager = SensorManager()
@@ -137,16 +148,6 @@ if _DECISION_STORE:
         if _LOGGER:
             logger.error(f"Failed to initialize DecisionStore: {e}", event_type="init_error")
         _DECISION_STORE = False
-
-# ─── CONFIG (all values come from .env) ───────────────────────────────────────
-SERIAL_PORT      = os.environ.get("NEO_SERIAL_PORT",  "COM3")
-BAUD_RATE        = 9600
-K2_API_KEY       = os.environ.get("K2_API_KEY",       "")
-K2_BASE_URL      = "https://api.k2think.ai/v1"
-K2_MODEL         = "MBZUAI-IFM/K2-Think-v2"
-K2_CALL_INTERVAL = float(os.environ.get("K2_CALL_INTERVAL", "2.0"))
-SIM_SPEED        = float(os.environ.get("SIM_SPEED",        "60"))
-LOOP_MS          = 100   # target control loop period in milliseconds
 
 # ─── SIMULATED CLOCK ──────────────────────────────────────────────────────────
 SIM_START = time.time()
@@ -185,9 +186,36 @@ BATTERY_CAPACITY_MAH = 2000.0
 # ─── Estimate solar and load from available sensors ──────────────────────────
 def estimate_solar_and_load(light: int, temp_c: float, pressure_hpa: float, sim_hour: float) -> tuple[float, float]:
     """
-    Since we only have light, temp, and pressure sensors:
-    - Solar current (mA) estimated from light level
-    - Load current (mA) estimated from time of day + weather + temperature
+    Derive simulated solar and load currents from 3 physical sensors.
+    
+    HARDWARE REALITY:
+    - Light sensor (LDR photoresistor): 0-1023 ADC reading
+    - Temperature (DHT11): -10 to +60°C
+    - Pressure (BMP180): 800-1100 hPa
+    
+    PHYSICS MODELING:
+    ─────────────────
+    Solar Generation (from light level):
+      • Direct relationship: higher light = more solar output
+      • Peak at noon (light=1023) → ~800 mA generation
+      • Zero at night (light=0) → ~0 mA generation
+      
+    Load/Demand (from pressure + temp + time-of-day):
+      • Base load: always present (150 mA minimum)
+      • Temperature factor: extreme temps increase AC/heating load
+        - Peak at 20°C (comfort zone) = minimum load
+        - Increases with distance from 20°C: each degree = +5 mA
+      • Time-of-day factor (duck curve): residential + industrial patterns
+        - Peak hours: 6-9am (morning), 5-9pm (evening) = 1.8-1.9x base
+        - Night: 0-5am = 0.4x base (low usage)
+        - Mid-day: moderate usage = 1.0-1.4x base
+      • Pressure factor: falling pressure = storm approaching
+        - Storms trigger anxiety, lighting, fans, etc.
+        - Each hPa below 1013 = +2 mA load
+    
+    Returns
+    -------
+    (solar_ma, load_ma) tuple representing current estimates in milliamps
     """
     # Solar: 0-1023 LDR → 0-800 mA (brightness ∝ solar generation)
     solar_ma = (light / 1023.0) * 800.0
