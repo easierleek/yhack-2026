@@ -83,7 +83,7 @@ _policy_lock_until = 0.0   # epoch time; sim won't touch PWM until after this
 
 # ─── Dynamic PWM model ───────────────────────────────────────────────────────
 
-def _compute_pwm(solar_ma: float, load_ma: float, battery_soc: float, sim_hour: float, light: int = 512) -> list:
+def _compute_pwm(solar_ma: float, load_ma: float, battery_soc: float, sim_hour: float, light: int = 512, res_factor: float = 1.0, com_factor: float = 1.0) -> list:
     """
     Distribute power across tiers based on available supply.
 
@@ -104,10 +104,10 @@ def _compute_pwm(solar_ma: float, load_ma: float, battery_soc: float, sim_hour: 
         power_score *= 0.75
 
     # Each tier covers a different range of power_score
-    t1 = int(min(255, 190 + power_score * 43))              # 190-255  (75-100%)
-    t2 = int(min(255, max(80,  110 + power_score * 95)))    # 80-252   (31-99%)
-    t3 = int(min(255, max(0,   power_score * 185)))         # 0-255    (0-100%)
-    t4 = int(min(255, max(0,   (power_score - 0.35) * 220)))# 0-255    (0 until score>0.35)
+    t1 = int(min(255, 190 + power_score * 43))                           # 190-255  (75-100%)
+    t2 = int(min(255, max(80,  110 + power_score * 95)))                 # 80-252   (31-99%)
+    t3 = int(min(255, max(0,   power_score * 185 * res_factor)))         # knob A scales residential
+    t4 = int(min(255, max(0,   (power_score - 0.35) * 220 * com_factor)))# knob B scales commercial
 
     return [
         t1, t1,                   # ch 0-1   T1 Hospitals
@@ -405,9 +405,14 @@ def _sim_loop() -> None:
             _state['battery_soc'] = round(soc, 4)
             _state['duck_demand'] = round(0.5 + 0.3 * math.sin(math.pi * h / 12), 3)
 
+            # Knob modifiers: pot1 = residential demand (0-1023), pot2 = commercial demand
+            res_factor = 0.5 + (_state['pot1'] / 1023.0)   # 0.5x–1.5x
+            com_factor = 0.5 + (_state['pot2'] / 1023.0)   # 0.5x–1.5x
+
             # Recompute per-building PWM unless a mayor directive is still active
             if time.time() > _policy_lock_until:
-                _state['pwm'] = _compute_pwm(solar, demand, soc, h, _state['light'])
+                _state['pwm'] = _compute_pwm(solar, demand, soc, h, _state['light'],
+                                             res_factor, com_factor)
                 _state['active_policy'] = 'None'
 
             payload = json.dumps(_state)

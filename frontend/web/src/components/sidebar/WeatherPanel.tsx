@@ -31,6 +31,15 @@ export function WeatherPanel({ state }: Props) {
         <StatRow label="T2 factor" value={`${state.t2_demand_factor.toFixed(2)}x`} valueColor={state.t2_demand_factor > 1.2 ? 'var(--yellow)' : undefined} />
       </div>
 
+      {/* Hardware knobs */}
+      <div style={{ marginTop: 10, borderTop: '1px solid var(--border)', paddingTop: 8 }}>
+        <div style={{ fontSize: 9, color: 'var(--text-secondary)', fontWeight: 600, marginBottom: 6, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+          Hardware Inputs
+        </div>
+        <KnobRow label="Res Demand" value={state.pot1} color="var(--blue)" />
+        <KnobRow label="Com Demand" value={state.pot2} color="var(--yellow)" />
+      </div>
+
       {/* Storm probability bar */}
       <div style={{ marginTop: 8 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, marginBottom: 3 }}>
@@ -83,6 +92,21 @@ function StatRow({ label, value, valueColor }: { label: string; value: string; v
     <div>
       <div style={{ color: 'var(--text-dim)', fontSize: 9, marginBottom: 1 }}>{label}</div>
       <div className="mono" style={{ color: valueColor ?? 'var(--text-primary)', fontSize: 11 }}>{value}</div>
+    </div>
+  );
+}
+
+function KnobRow({ label, value, color }: { label: string; value: number; color: string }) {
+  const pct = Math.round(value / 1023 * 100);
+  return (
+    <div style={{ marginBottom: 6 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, marginBottom: 2 }}>
+        <span style={{ color: 'var(--text-dim)' }}>{label}</span>
+        <span className="mono" style={{ color }}>{pct}%</span>
+      </div>
+      <div style={{ height: 4, background: 'var(--bg-dark)', borderRadius: 2, overflow: 'hidden' }}>
+        <div style={{ height: '100%', width: `${pct}%`, background: color, borderRadius: 2, transition: 'width 0.2s ease' }} />
+      </div>
     </div>
   );
 }
