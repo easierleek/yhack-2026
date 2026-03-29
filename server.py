@@ -323,15 +323,15 @@ def _arduino_loop(port: str) -> None:
                     _state['light']        = parsed['light']
                     _state['temp_c']       = parsed['temp_c']
                     _state['pressure_hpa'] = parsed['pressure_hpa']
-                    _state['solar_ma']     = parsed['solar_ma']
-                    _state['load_ma']      = parsed['load_ma']
+                    # Don't overwrite sim's solar/load with 0 (INA219 not connected)
+                    if parsed['solar_ma'] > 0:
+                        _state['solar_ma'] = parsed['solar_ma']
+                    if parsed['load_ma'] > 0:
+                        _state['load_ma'] = parsed['load_ma']
                     _state['pot1']         = parsed['pot1']
                     _state['pot2']         = parsed['pot2']
                     _state['tilt']         = parsed['tilt']
                     _state['button']       = parsed['button']
-                    solar_ma = parsed['solar_ma']
-                    load_ma  = parsed['load_ma']
-                    _state['relay'] = 1 if solar_ma < load_ma * 0.8 else 0
 
                 # sim_hour is owned by sim_loop — don't overwrite it here
 

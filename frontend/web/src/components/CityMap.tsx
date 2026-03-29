@@ -335,6 +335,31 @@ export function CityMap({ state, selectedNodeId, onSelectZone, onSelectNode }: P
       <div className="map-static-overlay neo-map-status">
         <span className="mono">{state.relay === 0 ? 'SOLAR PRIORITY ACTIVE' : 'GRID ASSIST ACTIVE'}</span>
       </div>
+
+      <SensorOverlay state={state} />
+    </div>
+  );
+}
+
+function SensorOverlay({ state }: { state: NeoState }) {
+  const lightPct = Math.round(state.light / 1023 * 100);
+  const isStale = Date.now() - (state as NeoState & { _ts?: number })._ts! > 10000;
+
+  if (isStale) {
+    return (
+      <div className="neo-sensor-overlay" style={{ color: 'var(--red)' }}>
+        SENSOR OFFLINE
+      </div>
+    );
+  }
+
+  return (
+    <div className="neo-sensor-overlay">
+      <span>☀ {lightPct}%</span>
+      <span className="neo-sensor-sep">|</span>
+      <span>{state.temp_c.toFixed(1)}°C</span>
+      <span className="neo-sensor-sep">|</span>
+      <span>{state.pressure_hpa.toFixed(0)} hPa</span>
     </div>
   );
 }

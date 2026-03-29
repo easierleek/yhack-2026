@@ -683,6 +683,28 @@
   letter-spacing: 0.09em;
 }
 
+.neo-sensor-overlay {
+  position: absolute;
+  top: 80px;
+  left: 10px;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  background: var(--surface-overlay);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 0.65rem;
+  color: var(--text-primary);
+  box-shadow: var(--shadow-soft);
+  pointer-events: none;
+}
+.neo-sensor-sep {
+  color: var(--text-dim);
+}
+
 .n-card {
   width: 152px;
   max-width: 152px;
