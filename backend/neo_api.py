@@ -6,14 +6,31 @@ Real-time power management with AI decision-making
 
 import sys
 import json
+import os
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from arduino_interface import ArduinoInterface, PowerCalculator, PowerAllocationEngine, SensorData
+from k2_client import K2Client
 import threading
 import time
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
+
+# Initialize K2 client for intelligent responses
+k2_api_key = os.getenv('K2_API_KEY', '')
+k2_client = None
+if k2_api_key:
+    try:
+        k2_client = K2Client(api_key=k2_api_key)
+        print("[K2] Initialized AI response engine")
+    except Exception as e:
+        print(f"[K2] Failed to initialize: {e}")
+else:
+    print("[K2] No API key - using basic responses")
 
 # Global state
 arduino = ArduinoInterface(port="COM3", baud=115200)
@@ -100,7 +117,7 @@ def get_telemetry():
 @app.route('/api/mayor-directive', methods=['POST'])
 def mayor_directive():
     """
-    Process mayor directive and allocate power
+    Process mayor directive and allocate power with AI reasoning
     """
     data = request.get_json() or {}
     directive_text = data.get('directive', 'no directive')
@@ -167,12 +184,22 @@ def mayor_directive():
     current_pwm = pwm
     current_relay = relay
     
+    # Generate intelligent response using K2
+    neo_response = generate_ai_response(
+        directive_text,
+        solar_ma,
+        load_ma,
+        pwm,
+        zones,
+        explanation
+    )
+    
     # Build response
     response = {
         "directive": directive_text,
         "strategy": impact['strategy'],
         "interpretation": f"Received: {directive_text}",
-        "response": f"NEO Power Allocation\n\n{explanation}\n\nAdjusting all zones based on {impact['direction'].lower()}...",
+        "response": neo_response,
         "impact_analysis": {
             "overall_direction": impact['direction'],
             "power_change": f"{power_change_pct:+.1f}%",
@@ -194,6 +221,69 @@ def mayor_directive():
     }
     
     return jsonify(response), 200
+
+def generate_ai_response(directive_text: str, solar_ma: float, load_ma: float, pwm: list, zones: dict, explanation: str) -> str:
+    """Generate intelligent response using K2 LLM or fallback"""
+    
+    if not k2_client:
+        # Fallback: simple response
+        return f"NEO Power Allocation\n\n{explanation}\n\nDirective: {directive_text}"
+    
+    system_prompt = """You are NEO (Nodal Energy Oracle), an AI power management system for a smart city.
+    
+Your role:
+- Respond to mayor directives about power allocation
+- Explain power allocation decisions in natural, human-friendly language
+- Balance critical services (hospitals) with revenue (commercial zones)
+- Reference actual sensor data and grid conditions
+- Be concise but informative
+
+Power Grid Zones:
+- T1 (Hospitals): Always protected, essential services - PRIORITY
+- T2 (Utilities): Secondary infrastructure - HIGH PRIORITY
+- T3 (Industrial): Manufacturing and processing - MODERATE PRIORITY
+- T4 (Commercial): Retail and general business - LOWER PRIORITY, revenue generator
+
+Your response should:
+1. Acknowledge the directive
+2. Explain the power allocation decision
+3. Reference actual solar generation and load
+4. Show which zones are affected
+5. Be 2-3 sentences, natural and conversational"""
+
+    user_context = {
+        "directive": directive_text,
+        "solar_generation_ma": solar_ma,
+        "current_load_ma": load_ma,
+        "power_allocation": {
+            "T1_hospitals": f"{(pwm[0] / 255 * 100):.0f}%",
+            "T2_utilities": f"{(sum(pwm[2:5]) / 3 / 255 * 100):.0f}%",
+            "T3_industrial": f"{(sum(pwm[5:10]) / 5 / 255 * 100):.0f}%",
+            "T4_commercial": f"{(sum(pwm[10:16]) / 6 / 255 * 100):.0f}%"
+        },
+        "technical_reasoning": explanation,
+        "power_deficit_mode": solar_ma < load_ma,
+        "power_export_mode": solar_ma > load_ma * 1.5
+    }
+    
+    try:
+        k2_response = k2_client.call(system_prompt, user_context)
+        if k2_response.success or k2_response.cached:
+            # Extract text response
+            response_text = k2_response.raw_response
+            if hasattr(k2_response, 'raw_response') and k2_response.raw_response:
+                response_text = k2_response.raw_response
+            else:
+                response_text = explanation
+            
+            return f"NEO: {response_text}"
+        else:
+            # K2 failed but we have cache or error message
+            return f"NEO Power Allocation\n\n{explanation}\n\n[Using fallback mode]"
+    except Exception as e:
+        print(f"[K2] Error generating response: {e}")
+        # Fallback to technical explanation
+        return f"NEO Power Allocation\n\n{explanation}"
 
 @app.route('/api/pwm/set', methods=['POST'])
 def set_pwm():
