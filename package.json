@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "postinstall": "cd frontend/web && npm install --include=dev && npm run build",
-    "start": "serve -s frontend/web/dist -l ${PORT:-3000}",
+    "start": "serve -s frontend/web/dist -l tcp://0.0.0.0:${PORT:-3000}",
     "frontend:dev": "cd frontend/web && npm run dev",
     "frontend:build": "cd frontend/web && npm run build",
     "frontend:preview": "cd frontend/web && npm run preview"
