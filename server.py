@@ -26,7 +26,7 @@ except ImportError:
 
 STATIC = os.path.join(os.path.dirname(__file__), 'frontend', 'web', 'dist')
 
-app = Flask(__name__, static_folder=STATIC, static_url_path='')
+app = Flask(__name__)
 CORS(app)
 sock = Sock(app)
 
