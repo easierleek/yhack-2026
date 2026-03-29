@@ -54,8 +54,8 @@ type RoadPayload = {
 };
 
 const BOUNDS: [[number, number], [number, number]] = [
-  [41.24, -73.02],
-  [41.39, -72.82],
+  [41.226, -73.058],
+  [41.45, -72.792],
 ];
 
 const ROAD_STYLES: Record<string, { color: string; weight: number; opacity: number; z: number }> = {
@@ -69,9 +69,9 @@ const ROAD_STYLES: Record<string, { color: string; weight: number; opacity: numb
   secondary_link: { color: '#3AAA6A', weight: 2.5, opacity: 0.56, z: 4 },
   tertiary: { color: '#C49A3C', weight: 2, opacity: 0.46, z: 3 },
   tertiary_link: { color: '#C49A3C', weight: 1.7, opacity: 0.4, z: 2 },
-  residential: { color: '#C49A3C', weight: 1.25, opacity: 0.28, z: 1 },
-  service: { color: '#C49A3C', weight: 1.05, opacity: 0.22, z: 0 },
-  unclassified: { color: '#C49A3C', weight: 1.15, opacity: 0.24, z: 1 },
+  residential: { color: '#C49A3C', weight: 1.4, opacity: 0.34, z: 1 },
+  service: { color: '#C49A3C', weight: 1.15, opacity: 0.26, z: 0 },
+  unclassified: { color: '#C49A3C', weight: 1.25, opacity: 0.3, z: 1 },
 };
 
 let roadsCachePromise: Promise<RoadPayload> | null = null;

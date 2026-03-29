@@ -48,10 +48,10 @@ export function Sidebar({ state, selectedZone, selectedNode, onClearSelection }:
     <div className="info-panel-content">
       <section className="panel-hero card-surface">
         <div>
-          <p className="eyebrow">New Haven / Yale</p>
-          <h2>Live grid map</h2>
+          <p className="eyebrow">Live Map</p>
+          <h2>New Haven</h2>
           <p className="hero-copy">
-            A dark Mini Motorways-inspired operations view with simplified real roads, square campus blocks, and ambient traffic.
+             New Haven, Connecticut is a historic coastal city home to Yale University, known for its vibrant downtown, diverse neighborhoods, and mix of education, culture, and industry.
           </p>
         </div>
         <div className="hero-pills">
