@@ -1,9 +1,9 @@
 [build]
 builder = "nixpacks"
-buildCommand = "python3 -m pip install --break-system-packages -r requirements.txt && cd frontend/web && npm ci && npm run build"
+buildCommand = "python3 -m venv /opt/venv && /opt/venv/bin/pip install -r requirements.txt && cd frontend/web && npm ci && npm run build"
 
 [deploy]
-startCommand = "python3 server.py"
+startCommand = "/opt/venv/bin/python3 server.py"
 healthcheckPath = "/api/health"
 healthcheckTimeout = 30
 restartPolicyType = "on_failure"

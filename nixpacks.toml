@@ -3,7 +3,8 @@ nixPkgs = ["python312", "nodejs_22"]
 
 [phases.install]
 cmds = [
-  "python3 -m pip install --break-system-packages -r requirements.txt",
+  "python3 -m venv /opt/venv",
+  "/opt/venv/bin/pip install -r requirements.txt",
   "cd frontend/web && npm ci"
 ]
 
@@ -11,4 +12,4 @@ cmds = [
 cmds = ["cd frontend/web && npm run build"]
 
 [start]
-cmd = "python3 server.py"
+cmd = "/opt/venv/bin/python3 server.py"
