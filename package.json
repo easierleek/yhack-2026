@@ -1,11 +1,11 @@
 {
   "name": "neo-power",
   "version": "1.0.0",
+  "private": true,
   "scripts": {
-    "start": "node neo-app/server.js"
-  },
-  "dependencies": {
-    "express": "^4.18.2",
-    "socket.io": "^4.7.4"
+    "start": "cd frontend/web && npm run dev",
+    "frontend:dev": "cd frontend/web && npm run dev",
+    "frontend:build": "cd frontend/web && npm run build",
+    "frontend:preview": "cd frontend/web && npm run preview"
   }
 }

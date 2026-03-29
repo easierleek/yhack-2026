@@ -34,7 +34,7 @@ You'll see:
 
 ### 3. Access the Chat
 
-Open the React dashboard at `http://localhost:3000` (or wherever your React dev server runs).
+Open the React dashboard at `http://localhost:5173` (or wherever your React dev server runs).
 
 - **Chat FAB Button**: Green speech bubble in the bottom-left corner
 - Click to open the mayor chat panel
@@ -115,7 +115,7 @@ frontend/web/src/App.tsx
 └── All paneling shared with existing info card
 
 frontend/web/src/styles/MayorChat.css
-└── Green/teal theme matching NEO aesthetic
+└── Shared charcoal system with NEO status accents
 ```
 
 ### Backend
