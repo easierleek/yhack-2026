@@ -98,6 +98,18 @@ except ImportError:
         _dash_update = lambda _: None
         print("[WARN] dashboard.py not found — running headless.")
 
+try:
+    from frontend.ws_server import start_ws_server as _start_ws
+    _WS_AVAILABLE = True
+except ImportError:
+    try:
+        from ws_server import start_ws_server as _start_ws
+        _WS_AVAILABLE = True
+    except ImportError:
+        _WS_AVAILABLE = False
+        _start_ws = lambda: None
+        print("[WARN] ws_server.py not found — web UI disabled.")
+
 # Policy engine is an addon — silently disabled if not present
 try:
     from backend.policy_engine import PolicyEngine
@@ -676,10 +688,16 @@ def main() -> None:
         except Exception as e:
             print(f"[EIA] Warm-up failed (simulated price active): {e}")
 
+    # ── WebSocket server thread ───────────────────────────────────────────────
+    if _WS_AVAILABLE:
+        _start_ws(host="localhost", port=8765)
+        time.sleep(0.1)   # allow asyncio loop to initialise before first broadcast
+
     # ── Dashboard thread ───────────────────────────────────────────────────────
     if _DASH:
-        threading.Thread(target=run_dashboard, daemon=True).start()
-        print("[NEO] Dashboard started.")
+        dash_thread = threading.Thread(target=run_dashboard, daemon=True)
+        dash_thread.start()
+        print("[NEO] Dashboard thread started.")
 
     # ── Policy engine (addon — silently skipped if unavailable) ───────────────
     policy = PolicyEngine(sim_start=SIM_START, sim_speed=SIM_SPEED) if _POLICY else None

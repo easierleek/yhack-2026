@@ -16,3 +16,6 @@ rich>=13.7.0
 
 # Load .env file into environment variables
 python-dotenv>=1.0.0
+
+# WebSocket server for React web UI
+websockets>=12.0

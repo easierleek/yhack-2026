@@ -30,6 +30,15 @@ import time
 import collections
 from typing import Any
 
+# ─── WebSocket broadcast (optional — web UI) ──────────────────────────────────
+try:
+    from frontend.ws_server import ws_broadcast as _ws_broadcast
+except ImportError:
+    try:
+        from ws_server import ws_broadcast as _ws_broadcast
+    except ImportError:
+        _ws_broadcast = None
+
 from rich.console import Console
 from rich.layout import Layout
 from rich.live import Live
@@ -96,6 +105,19 @@ def update_state(new_state: dict[str, Any]) -> None:
         if reason and reason != _state.get("_last_reason", ""):
             _state["_last_reason"] = reason
             _reasoning_feed.append((time.time(), reason))
+        # Build broadcast payload outside lock to minimise hold time
+        broadcast_payload = dict(_state)
+        feed_snapshot = list(_reasoning_feed)
+
+    # Broadcast to web UI (non-blocking — drops frame if WS not ready)
+    if _ws_broadcast is not None:
+        try:
+            broadcast_payload["reasoning_feed"] = [
+                [ts, text] for ts, text in feed_snapshot
+            ]
+            _ws_broadcast(broadcast_payload)
+        except Exception:
+            pass
 
 
 def _snap() -> dict[str, Any]:
