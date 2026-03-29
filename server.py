@@ -127,7 +127,7 @@ def ws_handler(ws):
 
 # ─── Arduino auto-detect ─────────────────────────────────────────────────────
 
-def _find_arduino_port() -> str | None:
+def _find_arduino_port():
     candidates = (
         glob.glob('/dev/cu.usbmodem*') +
         glob.glob('/dev/ttyACM*') +
@@ -138,7 +138,7 @@ def _find_arduino_port() -> str | None:
 
 # ─── Arduino telemetry parser ────────────────────────────────────────────────
 
-def _parse_arduino_line(line: str) -> dict | None:
+def _parse_arduino_line(line: str):
     """
     Parse either telemetry format the Arduino may send:
 
