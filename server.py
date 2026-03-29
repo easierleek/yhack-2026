@@ -261,7 +261,7 @@ def _arduino_loop(port: str) -> None:
         return
 
     # Try 115200 first (actual deployed firmware), fall back to 9600 (.ino firmware)
-    for baud in (115200, 9600):
+    for baud in (9600, 115200):
         ser = None
         try:
             ser = _serial.Serial(port, baud, timeout=2.0)
