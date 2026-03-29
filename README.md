@@ -1,53 +1,326 @@
 # ⚡ NEO — Nodal Energy Oracle
-### YHack 2025
 
-A hardware-in-the-loop simulation of an autonomous smart city power grid.
-An AI agent (K2 Think V2) acts as a grid operator — balancing volatile solar energy,
-human demand, and corporate profit in real-time on a physical Arduino breadboard.
+**AI-Powered Smart City Power Grid Management**
 
----
-
-## Team Roles
-
-| Role | Owner | Files |
-|------|-------|-------|
-| **Firmware Engineer** | Jeffery | `hardware/neo_arduino/neo_arduino.ino` |
-| **AI / Backend Engineer** | Turtle | `backend/main.py`, `backend/eia_client.py` |
-| **Data & Dashboard Engineer** | Andrew | `frontend/dashboard.py`, `backend/eia_client.py` |
-
-### Role Breakdown
-
-#### 🔧 Firmware Engineer (Jeffery)
-You own everything that touches physical hardware.
-- Write and flash `neo_arduino.ino` to the Arduino Uno
-- Verify each sensor reads correctly (print raw CSV to Serial Monitor first)
-- Confirm the PCA9685 drives all 16 LED channels
-- Test relay switching between the two power rails
-- Own the I2C address map — solder the INA219 jumpers correctly (see Wiring below)
-
-#### 🧠 AI / Backend Engineer (Turtle)
-You own the Python control loop and the K2 API.
-- Run `backend/main.py` — this is the brain of the whole system
-- Set your `K2_API_KEY` and `NEO_SERIAL_PORT` env vars before running
-- Tune `PENALTY_WEIGHTS` to make the reward function feel right
-- Tune `SYSTEM_PROMPT` if K2 is making bad decisions
-- Handle edge cases: what if K2 returns malformed JSON? (fallback is already coded)
-
-#### 📊 Data & Dashboard Engineer (Andrew)
-You own real-world data and visualization.
-- Set your `EIA_API_KEY` env var and run `python backend/eia_client.py` to self-test
-- Run `python frontend/dashboard.py` standalone to verify the layout looks good
-- The dashboard runs as a background thread — `update_state()` is called by `main.py`
-- If EIA API is down during the demo, the system automatically falls back to simulated prices
+NEO intelligently optimizes energy distribution across city zones (hospitals → utilities → industrial → commercial) using real-time hardware sensors and K2 Think V2 LLM. City officials interact with an AI chatbot that explains power allocation decisions and adjusts zones based on renewable energy availability, load demand, and service priorities.
 
 ---
 
-## Project Structure
+## 🎯 Quick Start
+
+### 1️⃣ Local Development (Backend + Frontend)
+
+```bash
+# Clone & setup
+git clone https://github.com/easierleek/yhack-2026.git
+cd "Yale Hack"
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r backend/requirements.txt
+npm install --prefix frontend/web
+
+# Start backend (port 5000)
+python backend/neo_api.py
+
+# In another terminal: Start frontend (port 5175)
+cd frontend/web
+npm run dev
+```
+
+Visit **http://localhost:5175** to test locally.
+
+### 2️⃣ Production Deployment
+
+**Frontend:** GoDaddy (already deployed)  
+**Backend:** Railway at `https://neo-power-production.up.railway.app`
+
+The frontend calls the Railway backend API at `/api/mayor-directive`.
+
+---
+
+## 📊 System Architecture
+
+```
+┌─────────────────────────────────────────┐
+│   Frontend (React + Vite + Leaflet)    │
+│   GoDaddy / localhost:5175              │
+└────────────────┬────────────────────────┘
+                 │ HTTP POST
+                 ↓
+┌─────────────────────────────────────────┐
+│   Backend API (Flask + Python)          │
+│   Railway / localhost:5000               │
+│   - K2 LLM Integration                  │
+│   - Power Allocation Engine             │
+│   - Arduino Serial Interface            │
+└────────────────┬────────────────────────┘
+                 │ Serial (COM3)
+                 ↓
+┌─────────────────────────────────────────┐
+│   Hardware (Arduino + Sensors)          │
+│   - LDR (solar generation)              │
+│   - BMP180 (temperature)                │
+│   - DHT11 (humidity)                    │
+│   - PCA9685 (16-ch PWM for LEDs)       │
+│   - Relay (city/grid switching)         │
+└─────────────────────────────────────────┘
+```
+
+---
+
+## 🔌 Hardware Setup
+
+**Arduino**: Arduino Uno with sensors and power management
+
+**Telemetry Format** (115200 baud, 50ms interval):
+```
+SUN:xxx|CITY_V:x.xx|GRID_V:x.xx|BMP_T:x.x|HUM:x.x
+```
+
+**Control Format** (from backend to Arduino):
+```
+PWM:v0,v1,...,v15,RELAY:r,LCD1:text,LCD2:text
+```
+
+**Sensor Mappings:**
+- `SUN`: 0-1023 ADC → 0-800mA solar generation
+- `CITY_V`: Voltage after relay (0-5V)
+- `GRID_V`: Grid potential before relay (0-5V)
+- `BMP_T`: Temperature in °C
+- `HUM`: Humidity %
+
+---
+
+## 🎮 API Endpoints
+
+### `POST /api/mayor-directive`
+
+Send a directive to the grid operator.
+
+**Request:**
+```json
+{
+  "directive": "save power",
+  "current_state": {
+    "zones": {"T1": 80, "T2": 60, "T3": 40, "T4": 20}
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "response": "NEO: Reducing commercial zones by 15% while protecting hospitals at 100%. Current solar: 450mA...",
+  "pwm": [204, 204, ..., 51],
+  "relay": 0,
+  "impact": {
+    "direction": "REDUCE",
+    "zones_affected": ["T4", "T3"],
+    "explanation": "..."
+  }
+}
+```
+
+### `GET /api/health`
+
+Check backend status.
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "arduino_connected": false,
+  "k2_initialized": true
+}
+```
+
+### `GET /api/telemetry`
+
+Get latest sensor readings.
+
+**Response:**
+```json
+{
+  "sun": 512,
+  "city_voltage": 4.2,
+  "grid_voltage": 4.8,
+  "bmp_temperature": 22.5,
+  "humidity": 55.0,
+  "timestamp": "2026-03-29T14:30:00Z"
+}
+```
+
+---
+
+## ⚙️ Configuration
+
+Create a `.env` file in the root directory:
+
+```bash
+# K2 LLM API
+K2_API_KEY=your_k2_think_v2_api_key
+
+# Arduino
+ARDUINO_PORT=COM3  # Windows: COM3, Linux: /dev/ttyUSB0
+ARDUINO_BAUD=115200
+
+# (Optional) GoDaddy domain for CORS
+ALLOWED_ORIGINS=https://your-domain.com
+```
+
+---
+
+## 🚀 Deployment
+
+### Railway Backend
+
+1. Push to GitHub main: `git push origin main`
+2. Railway auto-deploys via GitHub webhook
+3. Procfile specifies entry point: `web: cd backend && python neo_api.py`
+4. Set `K2_API_KEY` in Railway environment variables
+
+### Frontend (GoDaddy)
+
+Already deployed. The frontend calls the Railway API backend.
+
+To update frontend:
+```bash
+cd frontend/web
+npm run build
+# Copy dist/ contents to GoDaddy hosting
+```
+
+---
+
+## 🧠 Power Allocation Algorithm
+
+NEO protects critical services while maximizing renewable energy use:
+
+**Zone Hierarchy** (16 PWM channels):
+- **T1 (Hospitals)**: Channels 0-1, min 90% power
+- **T2 (Utilities)**: Channels 2-4, min 70% power
+- **T3 (Industrial)**: Channels 5-9, min 50% power
+- **T4 (Commercial)**: Channels 10-15, flexible
+
+**K2 LLM Integration:**
+
+When users send directives ("save power", "maximize production", etc.), the backend:
+
+1. Calculates current solar generation from LDR
+2. Estimates load from voltage measurements
+3. Determines power deficit/surplus mode
+4. Passes context to K2 to generate intelligent response
+5. Returns power allocation changes + AI explanation
+
+Circuit breaker pattern: if K2 fails, system falls back to technical explanations.
+
+---
+
+## 🛠️ Development
+
+### Backend
+
+```bash
+# Run with mock Arduino (no hardware needed)
+python backend/neo_api.py
+
+# Tests
+python backend/test_logic.py
+python backend/test_integration.py
+```
+
+### Frontend
+
+```bash
+cd frontend/web
+npm run dev      # Dev server
+npm run build    # Production build
+npm run preview  # Preview build
+```
+
+### Arduino
+
+1. Open `hardware/neo_arduino/neo_arduino.ino` in Arduino IDE
+2. Select Board: Arduino Uno
+3. Select Port: COM3 (or your port)
+4. Upload
+
+---
+
+## 📝 Environment Variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `K2_API_KEY` | (required) | K2 Think V2 API key |
+| `ARDUINO_PORT` | `COM3` | Serial port for Arduino |
+| `ARDUINO_BAUD` | `115200` | Serial baud rate |
+| `ALLOWED_ORIGINS` | `*` | CORS origins for API |
+
+---
+
+## 🧪 Testing the Chat API
+
+**Local:**
+```bash
+curl -X POST http://localhost:5000/api/mayor-directive \
+  -H "Content-Type: application/json" \
+  -d '{"directive":"save power", "current_state":{}}'
+```
+
+**On Railway:**
+```bash
+curl -X POST https://neo-power-production.up.railway.app/api/mayor-directive \
+  -H "Content-Type: application/json" \
+  -d '{"directive":"save power", "current_state":{}}'
+```
+
+---
+
+## 🐛 Troubleshooting
+
+| Issue | Solution |
+|-------|----------|
+| **Chat not working on GoDaddy** | Frontend code calls Railway API. Check Network tab in DevTools for 200 response. |
+| **"No Arduino connection" warning** | Expected if hardware not plugged in. System runs in mock mode. |
+| **K2 responses are generic** | Either K2_API_KEY missing or circuit breaker triggered. Check backend logs. |
+| **Frontend won't build** | Delete `node_modules`, run `npm install`, then `npm run build`. |
+
+---
+
+## 📚 Tech Stack
+
+- **Backend**: Python, Flask, K2 Think V2 LLM
+- **Frontend**: React, TypeScript, Vite, Leaflet
+- **Hardware**: Arduino Uno, LDR, BMP180, DHT11, PCA9685
+- **Deployment**: Railway (backend), GoDaddy (frontend)
+- **Version Control**: Git/GitHub
+
+---
+
+## 📄 Project Structure
 
 ```
 neo/
+├── backend/
+│   ├── neo_api.py              # Flask API + K2 LLM integration
+│   ├── arduino_interface.py    # Serial communication & power calculations
+│   ├── k2_client.py            # K2 API client with resilience
+│   ├── requirements.txt        # Python dependencies
+│   └── test_*.py               # Unit & integration tests
+├── frontend/
+│   └── web/
+│       ├── src/
+│       │   ├── components/MayorChat.tsx     # Chat UI
+│       │   ├── components/CityMap.tsx       # Leaflet map
+│       │   └── App.tsx                      # Main app
+│       ├── package.json
+│       └── vite.config.ts
 ├── hardware/
 │   └── neo_arduino/
+│       └── neo_arduino.ino     # Arduino firmware
+├── Procfile                    # Railway deployment
+├── README.md                   # This file
+└── .env                        # Environment variables (local only)
 │       └── neo_arduino.ino      # Arduino firmware (Jeffery)
 │
 ├── backend/
