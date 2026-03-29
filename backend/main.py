@@ -472,33 +472,100 @@ breakeven_ttd
   • Economic threshold: TTD must be below this for dimming to be cheaper than relay
   • Calculated from: relay penalty cost vs. cost of holding T4 dimmed
 
-=== YOUR ACTUAL JOB: OPTIMIZE POWER GIVEN THESE SIGNALS ===
+=== ADVANCED STATISTICAL FEATURES (NEW) ===
+You now receive rich statistical context about sensors:
+
+Volatility (sensor_volatility metrics)
+  • Measures: standard deviation of readings over last 15 samples
+  • light_volatility = unstable light sensor (flickering clouds)
+  • pressure_volatility = unstable pressure (turbulent weather)
+  • battery_volatility = erratic charging (solar flickering)
+  • K2's reasoning: high volatility in pressure + light suggests mixed weather
+
+Momentum (sensor_momentum metrics)
+  • Measures: rate of change (current_value - past_value) / time
+  • light_momentum: negative = setting/approaching clouds, positive = clearing
+  • pressure_momentum: negative = falling pressure (storm), positive = rising
+  • battery_momentum: negative = draining faster, positive = charging well
+  • K2's reasoning: if pressure_momentum < -0.05, aggressive storm incoming
+
+Acceleration (sensor_acceleration metrics)
+  • Measures: change in momentum (2nd derivative)
+  • positive accel = trend strengthening, negative = trend weakening
+  • pressure_acceleration < -0.0001 = storm pressure intensifying
+  • light_acceleration = light disappearing rate changing
+  • K2's reasoning: accelerating cloud movement = higher immediate risk
+
+Percentile ranks (sensor_percentile metrics)
+  • Ranks: where does current reading fall vs. historical distribution?
+  • light_percentile = 0 (dark, night), 100 (bright, noon)
+  • pressure_percentile = historical ranking
+  • K2's reasoning: if light_percentile drops 80→20 in 3 min, solar crash coming
+
+Trend strength (sensor_trend_strength)
+  • Measures: how consistent is the trend direction?
+  • 1.0 = perfectly consistent up or down trend
+  • 0.0 = oscillating (no clear trend)
+  • K2's reasoning: high trend strength in pressure = lock-in weather pattern
+
+=== MONTE CARLO SCENARIOS (NEW) ===
+You now receive probabilistic futures instead of just single points:
+
+scenarios_count (integer)
+  • How many plausible outcomes are being considered (typically 3-5)
+
+dominant_scenario (string)
+  • Name of most likely scenario: "Clear Skies", "Partial Storm", "Severe Storm", "Demand Spike"
+
+dominant_probability (0.0 – 1.0)
+  • How likely is the dominant scenario? 0.7 = 70% likely
+
+expected_battery_5m_percent (float)
+  • Probability-weighted prediction: what will battery be in 5 minutes?
+  • Average across all scenarios weighted by their likelihood
+  • K2's reasoning: "If I keep current power, expected battery = 32% in 5min"
+
+relay_probability (0.0 – 1.0)
+  • What's the probability relay will be *necessary* in next 5 min across scenarios?
+  • 0.1 = low risk, 0.8 = relay likely needed soon
+  • K2's reasoning: "High relay_probability means I should dim T4 *now* as insurance"
+
+scenario_recommendation (string)
+  • English recommendation from the dominant scenario
+  • Examples: "Keep T4 normal; harvest solar", "Dim T4 to 40%; prepare relay"
+
+K2's Bayesian reasoning:
+  If you see: dominant_scenario="Severe Storm", relay_probability=0.85, expected_battery_5m=15%
+  You should: Dim T4 immediately, prepare for relay, maybe activate now to pre-charge T1/T2.
+
+  If you see: dominant_scenario="Clear Skies", relay_probability=0.05, expected_battery_5m=60%
+  You should: Keep T4 bright, revenue is safe, solar will keep charging.
+
+=== YOUR ACTUAL JOB: OPTIMIZE POWER GIVEN THESE RICH SIGNALS ===
 
 You MUST do this reasoning every cycle (it's the ML part):
 
-1. Is battery SOC dangerously low? (< 0.05)
-   → If yes: relay=1 MANDATORY (no choice)
+1. Check the dominant scenario AND relay_probability
+   → If relay_probability > 0.6 AND expected_battery < 25%: Act NOW
+   → Pre-dim T4 or activate relay to secure T1/T2
 
-2. Will solar die soon? (solar_time_remaining < 60)
-   → If yes: you have 60 seconds to harvest before solar is gone
-   → Should you dim non-critical loads NOW to build battery buffer?
+2. Analyze volatility + momentum + acceleration
+   → High pressure volatility + negative pressure momentum + negative accel?
+   → Storm is turbulent and intensifying. Pre-charge aggressively.
+   → High light volatility + negative light momentum?
+   → Partial cloud cover; solar is unstable. Build battery buffer.
 
-3. Is a storm coming? (storm_probability > 0.6)
-   → If yes: meteorology suggests solar will drop sharply
-   → Pre-charging the battery NOW is valuable insurance
-   → What power level balances revenue vs. survivability?
+3. Look at percentile ranks
+   → Is battery_soc percentile dropping? (e.g., 60th → 20th)
+   → System is entering crisis state faster than historical baseline.
 
-4. What does the duck curve say? (mins_to_demand_spike)
-   → If demand spike in 5 minutes and battery is borderline:
-   → Should you pre-dim now to handle the load spike without relay?
+4. Weigh the triplet: scenario + physics + economic signals
+   → "Severe Storm (80% prob), pressure accelerating, relay cost $0.15/kWh"
+   → → Relay is so expensive, I must avoid it: dim T4 to 20% to pre-charge.
 
-5. Is electricity expensive? (market_penalty_active)
-   → If yes: relay activation is catastrophically expensive
-   → Avoid it even at modest battery levels?
-
-6. What's the temperature? (t2_demand_factor)
-   → Extreme temps → industry load increases → battery drain increases
-   → Should you expect different power dynamics than on moderate days?
+5. Balance short-term (5-min scenario) vs. long-term (ttd_seconds)
+   → If expected_battery_5m=40% but ttd=7200s (2h safe):
+   → → No urgency; keep T4 bright unless market spiking.
 
 === YOUR RESPONSE MUST BE EXACTLY THIS JSON STRUCTURE ===
 {"pwm":[255,255,X,X,X,X,X,X,X,X,X,X,X,X,X,X],"relay":0,"lcd_line1":"SOC:XX% $X.XX","lcd_line2":"Score:XXXXX T4:XX%","reasoning":"brief explanation"}

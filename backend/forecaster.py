@@ -20,12 +20,38 @@
 #  dim_t4_recommended   — bool: proactive dim beats relay click
 #  breakeven_ttd        — TTD threshold below which dimming wins
 #  market_penalty_active— bool: market price too high to use relay
+#
+#  ADVANCED FEATURES (new):
+#  ─────────────────────────
+#  Statistical features from history:
+#    - light_volatility, pressure_volatility — sensor stability
+#    - light_momentum, pressure_momentum — rate of change
+#    - light_acceleration, pressure_acceleration — 2nd derivative
+#    - percentile ranks — is current reading historically high/low?
+#
+#  Monte Carlo scenarios (new):
+#    - scenarios — list of 3-5 plausible futures with probabilities
+#    - expected_battery_5m — probability-weighted battery outcome
+#    - relay_probability — likelihood relay will be needed
 # ============================================================
 
 from __future__ import annotations
 
 import math
 from typing import Optional
+
+# ── New: Advanced analytics modules ────────────────────────────────────────────
+try:
+    from feature_engineer import FeatureEngineer
+    _FEATURE_ENG = True
+except ImportError:
+    _FEATURE_ENG = False
+
+try:
+    from scenario_simulator import ScenarioSimulator
+    _SCENARIO_SIM = True
+except ImportError:
+    _SCENARIO_SIM = False
 
 # ─── CONSTANTS ────────────────────────────────────────────────────────────────
 BATTERY_CAPACITY_MAH: float = 2000.0   # must match main.py
@@ -38,6 +64,10 @@ DUCK_CURVE: dict[int, float] = {
     17: 0.70, 18: 0.90, 19: 1.00, 20: 0.95, 21: 0.80,
     22: 0.60, 23: 0.40,
 }
+
+# ── Global singleton instances for advanced analytics ───────────────────────────
+_feature_engineer = FeatureEngineer() if _FEATURE_ENG else None
+_scenario_simulator = ScenarioSimulator() if _SCENARIO_SIM else None
 
 # ─── 1. TIME TO DEFICIT ───────────────────────────────────────────────────────
 
@@ -306,6 +336,44 @@ def compute_forecast(
     sun_slope      = _slope(history, "light")
     pressure_slope = _slope(history, "pressure_hpa")
 
+    # ── NEW: Advanced feature engineering ──────────────────────────────────────
+    advanced_features = {}
+    scenarios_data = {}
+    
+    if _FEATURE_ENG and _feature_engineer:
+        # Update feature engineer with latest sensor reading
+        if history:
+            _feature_engineer.update(history[-1])
+        
+        # Compute all statistical features
+        advanced_features = _feature_engineer.compute_all_features()
+    
+    if _SCENARIO_SIM and _scenario_simulator:
+        # Generate Monte Carlo scenarios
+        scenarios = _scenario_simulator.generate_scenarios(
+            battery_soc=battery_soc,
+            storm_probability=storm_prob,
+            solar_ma=solar_ma,
+            load_ma=load_ma,
+            temp_c=temp_c,
+            market_price=market_price,
+            t2_demand_factor=t2_factor,
+            time_horizon_minutes=5.0,
+        )
+        
+        # Compute weighted outcome
+        weighted = _scenario_simulator.compute_weighted_outcome(scenarios)
+        
+        # Serialize scenarios for K2 (convert to simple dicts for JSON)
+        scenarios_data = {
+            "scenarios_count": len(scenarios),
+            "dominant_scenario": weighted.get("dominant_scenario", "Unknown"),
+            "dominant_probability": weighted.get("dominant_probability", 0.0),
+            "expected_battery_5m_percent": weighted.get("expected_battery_5m_percent", battery_soc * 100),
+            "relay_probability": weighted.get("relay_probability", 0.0),
+            "scenario_recommendation": weighted.get("recommendation", "Maintain current power levels"),
+        }
+
     return {
         # ── Core predictive signals (RAW, for K2 to reason with) ──────────────
         "storm_probability":      storm_prob,
@@ -322,6 +390,12 @@ def compute_forecast(
         # ── Raw slopes (signals for K2 to interpret) ──────────────────────────
         "sun_slope":              round(sun_slope,      2),
         "pressure_slope":         round(pressure_slope, 4),
+        
+        # ── NEW: Advanced statistical features (for sophisticated reasoning) ──
+        **advanced_features,
+        
+        # ── NEW: Monte Carlo scenarios (for probability-weighted decisions) ────
+        **scenarios_data,
     }
 
 
