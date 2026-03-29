@@ -36,6 +36,35 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_HERE, ".."))
 sys.path.insert(0, _HERE)
 
+# ── NEW: Resilience & Monitoring Modules ──────────────────────────────────────
+try:
+    from logger import logger
+    _LOGGER = True
+except ImportError:
+    _LOGGER = False
+    logger = None
+
+try:
+    from sensor_manager import SensorManager
+    _SENSOR_MGR = True
+except ImportError:
+    _SENSOR_MGR = False
+    SensorManager = None
+
+try:
+    from k2_client import K2Client
+    _K2_CLIENT = True
+except ImportError:
+    _K2_CLIENT = False
+    K2Client = None
+
+try:
+    from decision_store import get_store as get_decision_store
+    _DECISION_STORE = True
+except ImportError:
+    _DECISION_STORE = False
+    get_decision_store = None
+
 # ── Optional modules (system keeps running if any are missing) ─────────────────
 try:
     from backend.eia_client import get_market_price, warm_cache, get_cache_status
@@ -79,6 +108,35 @@ except ImportError:
         _POLICY = True
     except ImportError:
         _POLICY = False
+
+# ── Initialize Resilience Systems ──────────────────────────────────────────────
+sensor_manager = None
+k2_client = None
+decision_store = None
+
+if _SENSOR_MGR:
+    try:
+        sensor_manager = SensorManager()
+    except Exception as e:
+        if _LOGGER:
+            logger.error(f"Failed to initialize SensorManager: {e}", event_type="init_error")
+        _SENSOR_MGR = False
+
+if _K2_CLIENT and K2_API_KEY:
+    try:
+        k2_client = K2Client(K2_API_KEY, K2_BASE_URL, K2_MODEL)
+    except Exception as e:
+        if _LOGGER:
+            logger.error(f"Failed to initialize K2Client: {e}", event_type="init_error")
+        _K2_CLIENT = False
+
+if _DECISION_STORE:
+    try:
+        decision_store = get_decision_store()
+    except Exception as e:
+        if _LOGGER:
+            logger.error(f"Failed to initialize DecisionStore: {e}", event_type="init_error")
+        _DECISION_STORE = False
 
 # ─── CONFIG (all values come from .env) ───────────────────────────────────────
 SERIAL_PORT      = os.environ.get("NEO_SERIAL_PORT",  "COM3")
@@ -459,6 +517,18 @@ DO NOT write anything before { or after }. Output the JSON and nothing else.
 def main() -> None:
     global battery_soc, reward_score
 
+    # ── Startup logging ───────────────────────────────────────────────────────
+    if _LOGGER:
+        logger.log_startup({
+            "serial_port": SERIAL_PORT,
+            "k2_available": bool(K2_API_KEY and _K2_CLIENT),
+            "forecaster_available": compute_forecast is not None,
+            "dashboard_available": _DASH,
+            "policy_available": _POLICY,
+            "sensor_manager_available": _SENSOR_MGR,
+            "decision_store_available": _DECISION_STORE,
+        })
+    
     # ── EIA cache warm-up ──────────────────────────────────────────────────────
     if warm_cache is not None:
         try:
@@ -474,10 +544,9 @@ def main() -> None:
     # ── Policy engine (addon — silently skipped if unavailable) ───────────────
     policy = PolicyEngine(sim_start=SIM_START, sim_speed=SIM_SPEED) if _POLICY else None
 
-    # ── K2 client ─────────────────────────────────────────────────────────────
+    # ── K2 client already initialized above ────────────────────────────────────
     if not K2_API_KEY:
-        print("[WARN] K2_API_KEY is not set in .env — AI will use safe fallback only.")
-    k2 = OpenAI(api_key=K2_API_KEY or "placeholder", base_url=K2_BASE_URL)
+        print("[WARN] K2_API_KEY is not set in .env — AI will use K2 fallback.")
 
     # ── Serial connection ──────────────────────────────────────────────────────
     print(f"[NEO] Opening serial port {SERIAL_PORT} @ {BAUD_RATE} baud...")
@@ -521,8 +590,25 @@ def main() -> None:
                 "tilt":         int(parts[7]),
                 "button":       int(parts[8]),
             }
+            
+            # ── Sensor validation ─────────────────────────────────────────────
+            if sensor_manager:
+                for sensor_key in ["light", "temp_c", "pressure_hpa", "solar_ma", "load_ma"]:
+                    result = sensor_manager.update_reading(
+                        f"{sensor_key}_lux" if sensor_key == "light" else 
+                        f"{sensor_key}_c" if sensor_key == "temp_c" else
+                        f"{sensor_key}_hpa" if sensor_key == "pressure_hpa" else sensor_key,
+                        sensor[sensor_key]
+                    )
+                    if result["warnings"]:
+                        for warning in result["warnings"]:
+                            if _LOGGER:
+                                logger.log_sensor_anomaly(sensor_key, sensor[sensor_key], sensor_manager.last_readings.get(sensor_key), warning)
+        
         except (ValueError, IndexError) as e:
             print(f"[SERIAL] Parse error ({e}): {line!r}")
+            if _LOGGER:
+                logger.error(f"[SERIAL] Parse error: {e}", event_type="serial_error")
             continue
 
         # ── 2. Update battery and history ─────────────────────────────────────
@@ -594,35 +680,65 @@ def main() -> None:
         }
 
         # ── 6. Call K2 Think V2 (rate-limited to K2_CALL_INTERVAL) ───────────
-        if now - last_k2_call >= K2_CALL_INTERVAL and K2_API_KEY:
+        was_cached = False
+        if now - last_k2_call >= K2_CALL_INTERVAL and (K2_API_KEY or k2_client):
             last_k2_call = now
             k2_calls    += 1
             try:
-                resp = k2.chat.completions.create(
-                    model       = K2_MODEL,
-                    max_tokens  = 8192,  # model reasons for ~15k chars before JSON
-                    temperature = 0.1,
-                    messages    = [
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user",   "content": json.dumps(context)},
-                    ],
-                )
-                raw     = resp.choices[0].message.content or ""
-                command = extract_json(raw)
+                # Use resilient K2 client if available
+                if k2_client:
+                    response = k2_client.call(SYSTEM_PROMPT, context)
+                    was_cached = response.cached
+                    
+                    if response.success or response.cached:
+                        command = {
+                            "pwm": response.pwm,
+                            "relay": response.relay,
+                            "lcd_line1": response.lcd_text[:16] if response.lcd_text else "NEO ACTIVE",
+                            "lcd_line2": f"Score:{reward_score:.0f}",
+                            "reasoning": response.raw_response[:80] if response.raw_response else "K2 response",
+                        }
+                        if response.error:
+                            if _LOGGER:
+                                logger.log_k2_error(response.error, 0, k2_client.circuit_breaker.state == "open")
+                    else:
+                        command = safe_command()
+                        if _LOGGER:
+                            logger.log_k2_error(response.error or "Unknown error", 1, False)
+                else:
+                    # Fallback to old OpenAI approach if k2_client not available
+                    from openai import OpenAI
+                    k2 = OpenAI(api_key=K2_API_KEY or "placeholder", base_url=K2_BASE_URL)
+                    resp = k2.chat.completions.create(
+                        model       = K2_MODEL,
+                        max_tokens  = 8192,
+                        temperature = 0.1,
+                        messages    = [
+                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "user",   "content": json.dumps(context)},
+                        ],
+                    )
+                    raw     = resp.choices[0].message.content or ""
+                    command = extract_json(raw)
 
-                # Repair truncated responses instead of discarding them
-                if len(command.get("pwm", [])) != 16:
-                    command = repair_command(command)
-                    print(f"[K2 #{k2_calls}] Repaired partial response (pwm padded to 16)")
+                    if len(command.get("pwm", [])) != 16:
+                        command = repair_command(command)
+                        print(f"[K2 #{k2_calls}] Repaired partial response (pwm padded to 16)")
 
                 # Hard safety: hospitals always full power
                 command["pwm"][0] = 255
                 command["pwm"][1] = 255
 
-                print(f"[K2 #{k2_calls}] {command.get('reasoning', '')}")
+                reasoning_text = command.get('reasoning', '')
+                if len(reasoning_text) > 60:
+                    print(f"[K2 #{k2_calls}] {reasoning_text[:60]}...")
+                else:
+                    print(f"[K2 #{k2_calls}] {reasoning_text}")
 
             except Exception as e:
                 print(f"[K2 ERROR] {e}")
+                if _LOGGER:
+                    logger.error(f"K2 call failed: {str(e)}", event_type="k2_error")
                 command = safe_command()
 
         # ── 7. Hard overrides (enforced in Python, not just in the prompt) ────
@@ -652,6 +768,37 @@ def main() -> None:
             prev_relay = prev_relay,
             weights    = weights,
         )
+        
+        # ── Log decision to store ──────────────────────────────────────────────
+        if decision_store and now - last_k2_call < 0.5:  # Only log recent K2 decisions
+            try:
+                decision_store.log_decision(
+                    context=context,
+                    k2_response=type('obj', (object,), {'pwm': command["pwm"], 'relay': command["relay"], 'raw_response': command.get("reasoning", "")}),
+                    reward_score=reward_score,
+                    was_cached=was_cached,
+                    error_occurred=False,
+                )
+            except Exception as e:
+                if _LOGGER:
+                    logger.error(f"Failed to log decision: {str(e)}", event_type="store_error")
+        
+        # ── Log reward ─────────────────────────────────────────────────────────
+        if _LOGGER:
+            penalties = {
+                "t1": weights["tier1_dim"],
+                "t2": weights["tier2_per10"],
+                "t3": weights["tier3_outrage"],
+                "t4": weights["tier4_per10"],
+            }
+            tier_breakdown = {
+                "t1_pwm": command["pwm"][0],
+                "t2_pwm_avg": sum(command["pwm"][2:5]) / 3,
+                "t3_pwm_avg": sum(command["pwm"][5:10]) / 5,
+                "t4_pwm_avg": sum(command["pwm"][10:16]) / 6,
+            }
+            logger.log_reward_score(reward_score, penalties, tier_breakdown)
+        
         prev_relay = command["relay"]
 
         # ── 9. Grid fault detection ───────────────────────────────────────────
@@ -684,6 +831,10 @@ def main() -> None:
                 pass
 
         loop_ms = (time.time() - loop_start) * 1000.0
+        
+        # ── Log loop timing ────────────────────────────────────────────────────
+        if _LOGGER:
+            logger.log_loop_timing(loop_ms, now - last_k2_call >= K2_CALL_INTERVAL, [loop_ms])
 
         _dash_update({
             "battery_soc":          battery_soc,
@@ -729,6 +880,7 @@ def main() -> None:
 if __name__ == "__main__":
     print("=" * 60)
     print("  NEO — Nodal Energy Oracle  |  YHack 2025")
+    print("  Enhanced with Resilience & Monitoring")
     print("=" * 60)
     print(f"  Serial port   : {SERIAL_PORT}")
     print(f"  K2 model      : {K2_MODEL}")
@@ -738,5 +890,25 @@ if __name__ == "__main__":
     print(f"  Forecaster    : {'enabled' if compute_forecast  else 'DISABLED'}")
     print(f"  Policy engine : {'enabled' if _POLICY          else 'addon not loaded'}")
     print(f"  Dashboard     : {'enabled' if _DASH            else 'headless'}")
+    print(f"  Logger        : {'enabled' if _LOGGER          else 'disabled'}")
+    print(f"  Sensor mgr    : {'enabled' if _SENSOR_MGR      else 'disabled'}")
+    print(f"  K2 resilience : {'enabled (circuit breaker)' if _K2_CLIENT else 'disabled'}")
+    print(f"  Decision store: {'enabled (SQLite)' if _DECISION_STORE else 'disabled'}")
     print("=" * 60 + "\n")
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        if _LOGGER:
+            logger.log_shutdown("Keyboard interrupt", time.time() - SIM_START)
+        print("\n[SHUTDOWN] NEO system halted.")
+        if decision_store:
+            summary = decision_store.get_summary()
+            print(f"\n[SUMMARY] {summary['total_decisions']} decisions logged")
+            print(f"          Avg reward: {summary['avg_reward']:.1f}")
+            print(f"          Cache rate: {summary['cache_rate']*100:.1f}%")
+            print(f"          Error rate: {summary['error_rate']*100:.1f}%")
+            decision_store.close()
+    except Exception as e:
+        if _LOGGER:
+            logger.error(f"Fatal error: {str(e)}", event_type="fatal_error")
+        raise
