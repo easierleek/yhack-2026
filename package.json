@@ -3,9 +3,13 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "start": "cd frontend/web && npm run dev",
+    "postinstall": "cd frontend/web && npm install --include=dev && npm run build",
+    "start": "serve -s frontend/web/dist -l ${PORT:-3000}",
     "frontend:dev": "cd frontend/web && npm run dev",
     "frontend:build": "cd frontend/web && npm run build",
     "frontend:preview": "cd frontend/web && npm run preview"
+  },
+  "dependencies": {
+    "serve": "^14.2.5"
   }
 }
