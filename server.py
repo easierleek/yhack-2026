@@ -35,7 +35,7 @@ sock = Sock(app)
 _state_lock = threading.Lock()
 _state = {
     'battery_soc': 0.62,
-    'sim_hour': 9.0,
+    'sim_hour': 6.5,
     'market_price': 0.17,
     'relay': 0,
     'reward_score': 0.81,
@@ -260,8 +260,6 @@ def _arduino_loop(port: str) -> None:
         print('[ARDUINO] pyserial not installed — pip install pyserial')
         return
 
-    import datetime as _dt
-
     # Try 115200 first (actual deployed firmware), fall back to 9600 (.ino firmware)
     for baud in (115200, 9600):
         ser = None
@@ -335,12 +333,10 @@ def _arduino_loop(port: str) -> None:
                     load_ma  = parsed['load_ma']
                     _state['relay'] = 1 if solar_ma < load_ma * 0.8 else 0
 
-                # Real-time clock → sim_hour
-                now = _dt.datetime.now()
-                h = round(now.hour + now.minute / 60, 2)
-                _state['sim_hour'] = h
+                # sim_hour is owned by sim_loop — don't overwrite it here
 
                 # Drift battery SOC
+                h = _state['sim_hour']
                 surplus = _state['solar_ma'] - _state['load_ma']
                 soc = max(0.05, min(1.0, _state['battery_soc'] + surplus * 0.0000005))
                 _state['battery_soc'] = round(soc, 4)
@@ -379,7 +375,7 @@ def _sim_loop() -> None:
         with _state_lock:
             # Advance simulated hour regardless of Arduino (Arduino doesn't measure solar)
             h = _state['sim_hour']
-            h = (h + 1 / 360) % 24   # 1 sim-hour per 6 real minutes (fast enough to see change)
+            h = (h + 1 / 120) % 24   # 1 sim-hour per 2 real minutes → full day in 48 min
             _state['sim_hour'] = h
 
             # Solar generation: bell curve 6am–6pm
