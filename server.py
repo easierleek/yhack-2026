@@ -17,6 +17,13 @@ from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from flask_sock import Sock
 
+# Load .env if present
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 STATIC = os.path.join(os.path.dirname(__file__), 'frontend', 'web', 'dist')
 
 app = Flask(__name__, static_folder=STATIC, static_url_path='')
@@ -72,6 +79,20 @@ _state = {
 }
 
 _arduino_connected = False
+
+# ─── K2 AI client ────────────────────────────────────────────────────────────
+
+_k2_client = None
+_k2_key = os.environ.get('K2_API_KEY', '')
+if _k2_key:
+    try:
+        from openai import OpenAI as _OpenAI
+        _k2_client = _OpenAI(api_key=_k2_key, base_url='https://api.k2think.ai/v1')
+        print(f'[K2] AI client ready')
+    except Exception as _e:
+        print(f'[K2] Init failed: {_e}')
+else:
+    print('[K2] No K2_API_KEY — using rule-based responses')
 
 # Infrastructure node id → PWM channel (mirrors infrastructure.ts)
 NODE_CHANNELS = {
@@ -394,6 +415,45 @@ def hardware_update():
     })
 
 
+def _k2_mayor_response(directive: str, snapshot: dict) -> str:
+    """Call K2 AI for a mayor directive response. Falls back to rule-based on error."""
+    if not _k2_client:
+        return None
+    try:
+        system = (
+            "You are NEO (Nodal Energy Oracle), an AI power management system for New Haven, CT.\n"
+            "You respond to the mayor's power directives concisely (2-3 sentences).\n"
+            "Grid tiers: T1=Hospitals (critical), T2=Utilities, T3=Residential, T4=Commercial (flexible).\n"
+            "Reference real grid data in your response. Be direct and authoritative."
+        )
+        user = (
+            f"Mayor directive: \"{directive}\"\n"
+            f"Current grid state: solar={snapshot['solar_ma']:.0f}mA, "
+            f"load={snapshot['load_ma']:.0f}mA, "
+            f"battery={snapshot['battery_soc']*100:.0f}%, "
+            f"relay={'GRID' if snapshot['relay'] else 'SOLAR'}, "
+            f"T1_pwm={snapshot['pwm'][0]}, T4_pwm={snapshot['pwm'][10]}\n"
+            "Acknowledge the directive and explain what NEO is doing."
+        )
+        resp = _k2_client.chat.completions.create(
+            model='MBZUAI-IFM/K2-Think-v2',
+            messages=[{'role': 'system', 'content': system},
+                      {'role': 'user', 'content': user}],
+            max_tokens=120,
+            temperature=0.7,
+        )
+        text = resp.choices[0].message.content.strip()
+        # Strip <think>...</think> reasoning block if present
+        if '</think>' in text:
+            text = text.split('</think>', 1)[-1].strip()
+        with _state_lock:
+            _state['k2_calls'] += 1
+        return text
+    except Exception as exc:
+        print(f'[K2] API error: {exc}')
+        return None
+
+
 @app.route('/api/mayor-directive', methods=['POST'])
 def mayor_directive():
     data = request.get_json(silent=True) or {}
@@ -422,11 +482,17 @@ def mayor_directive():
 
         _state['active_policy'] = directive[:60] if directive else 'None'
         _state['reasoning']     = f'Mayor directive: {directive}'
+        snapshot = dict(_state)
         payload = json.dumps(_state)
 
     _broadcast(payload)
+
+    # Call K2 AI for response (outside lock — may take a second)
+    ai_text = _k2_mayor_response(directive, snapshot)
+    response_text = ai_text if ai_text else f'NEO: Directive received. Strategy: {strategy}. Adjusting grid allocation.'
+
     return jsonify({'status': 'ok', 'strategy': strategy, 'directive': directive,
-                    'response': f'NEO: Directive received. Strategy: {strategy}.'})
+                    'response': response_text})
 
 
 @app.route('/api/pwm/set', methods=['POST'])
