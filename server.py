@@ -309,16 +309,12 @@ def _arduino_loop(port: str) -> None:
 
                 if fmt == 'A':
                     load_ma    = parsed['load_ma']
-                    current_a  = parsed['current_a']
                     power_w    = parsed['power_w']
-                    # Derive light: current directly reflects how many LEDs are lit.
-                    # Max observed ~0.05A at full load → maps to 1023 ADC units.
-                    light = int(min(1023, (current_a / 0.05) * 1023))
                     # Derive temp from power dissipation — more current = warmer components.
-                    # Baseline 20°C + small rise proportional to power.
                     temp_c = round(20.0 + power_w * 40, 1)
                     _state['load_ma']      = load_ma
-                    _state['light']        = light
+                    # light is NOT set here — Format A firmware doesn't read LDR.
+                    # sim_loop owns light so it smoothly tracks the solar cycle.
                     _state['temp_c']       = temp_c
                     _state['pressure_hpa'] = 1013.25  # not measured by this firmware
                     # solar_ma: keep simulation value (no dedicated solar sensor in this fw)
