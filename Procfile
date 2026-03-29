@@ -1,1 +1,1 @@
-web: cd backend && python neo_api.py
+web: python server.py
