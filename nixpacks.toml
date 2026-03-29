@@ -1,11 +1,11 @@
 [phases.setup]
-nixPkgs = ["python312", "nodejs_22"]
+nixPkgs = ["python312", "nodejs_24"]
 
 [phases.install]
 cmds = [
   "python3 -m venv /opt/venv",
   "/opt/venv/bin/pip install -r requirements.txt",
-  "cd frontend/web && npm ci"
+  "cd frontend/web && rm -rf node_modules package-lock.json && npm install"
 ]
 
 [phases.build]
