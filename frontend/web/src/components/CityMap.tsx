@@ -288,24 +288,25 @@ export function CityMap({ state, selectedNodeId, onSelectZone, onSelectNode }: P
   }, []);
 
   useEffect(() => {
-    const leaflet = getLeaflet();
-    if (!leaflet) return;
-
     INFRASTRUCTURE_NODES.forEach((node) => {
-      const marker = markerRefs.current[node.id];
-      if (!marker?.setIcon) return;
-      const nextSignature = `${selectedNodeId === node.id}:${Math.round(((state.pwm[node.channel] ?? 0) / 255) * 100)}`;
-      if (markerSignatureRef.current[node.id] === nextSignature) {
-        return;
-      }
-
-      marker.setIcon(leaflet.divIcon({
-        className: '',
-        html: nodeCardHtml(node, state, selectedNodeId),
-        iconSize: [152, 86],
-        iconAnchor: [76, 43],
-      }));
+      const pct = Math.round(((state.pwm[node.channel] ?? 0) / 255) * 100);
+      const isOffline = pct <= 5;
+      const selected = selectedNodeId === node.id;
+      const nextSignature = `${selected}:${pct}`;
+      if (markerSignatureRef.current[node.id] === nextSignature) return;
       markerSignatureRef.current[node.id] = nextSignature;
+
+      // Update DOM in-place — never call setIcon (that destroys/recreates the element)
+      const card = document.querySelector<HTMLElement>(`.n-card[data-id="${node.id}"]`);
+      if (card) {
+        card.querySelector<HTMLElement>('.n-pct')!.textContent = `${pct}%`;
+        const fill = card.querySelector<HTMLElement>('.n-bar-fill')!;
+        fill.style.width = `${pct}%`;
+        const status = card.querySelector<HTMLElement>('.n-status')!;
+        status.textContent = isOffline ? '● OFFLINE' : '● ONLINE';
+        status.className = `n-status ${isOffline ? 'n-offline' : 'n-online'}`;
+        card.classList.toggle('n-card-selected', selected);
+      }
     });
   }, [selectedNodeId, state]);
 
@@ -335,31 +336,6 @@ export function CityMap({ state, selectedNodeId, onSelectZone, onSelectNode }: P
       <div className="map-static-overlay neo-map-status">
         <span className="mono">{state.relay === 0 ? 'SOLAR PRIORITY ACTIVE' : 'GRID ASSIST ACTIVE'}</span>
       </div>
-
-      <SensorOverlay state={state} />
-    </div>
-  );
-}
-
-function SensorOverlay({ state }: { state: NeoState }) {
-  const lightPct = Math.round(state.light / 1023 * 100);
-  const isStale = Date.now() - (state as NeoState & { _ts?: number })._ts! > 10000;
-
-  if (isStale) {
-    return (
-      <div className="neo-sensor-overlay" style={{ color: 'var(--red)' }}>
-        SENSOR OFFLINE
-      </div>
-    );
-  }
-
-  return (
-    <div className="neo-sensor-overlay">
-      <span>☀ {lightPct}%</span>
-      <span className="neo-sensor-sep">|</span>
-      <span>{state.temp_c.toFixed(1)}°C</span>
-      <span className="neo-sensor-sep">|</span>
-      <span>{state.pressure_hpa.toFixed(0)} hPa</span>
     </div>
   );
 }

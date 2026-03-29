@@ -293,6 +293,8 @@ def _arduino_loop(port: str) -> None:
         _state['reasoning'] = f'Arduino live on {port}'
     _broadcast(json.dumps(_state))
 
+    _last_broadcast = 0.0   # throttle: broadcast at most once per second
+
     while True:
         try:
             line = ser.readline().decode('utf-8', errors='replace').strip()
@@ -323,15 +325,15 @@ def _arduino_loop(port: str) -> None:
                     _state['light']        = parsed['light']
                     _state['temp_c']       = parsed['temp_c']
                     _state['pressure_hpa'] = parsed['pressure_hpa']
-                    # Don't overwrite sim's solar/load with 0 (INA219 not connected)
-                    if parsed['solar_ma'] > 0:
-                        _state['solar_ma'] = parsed['solar_ma']
-                    if parsed['load_ma'] > 0:
-                        _state['load_ma'] = parsed['load_ma']
+                    _state['solar_ma']     = parsed['solar_ma']
+                    _state['load_ma']      = parsed['load_ma']
                     _state['pot1']         = parsed['pot1']
                     _state['pot2']         = parsed['pot2']
                     _state['tilt']         = parsed['tilt']
                     _state['button']       = parsed['button']
+                    solar_ma = parsed['solar_ma']
+                    load_ma  = parsed['load_ma']
+                    _state['relay'] = 1 if solar_ma < load_ma * 0.8 else 0
 
                 # sim_hour is owned by sim_loop — don't overwrite it here
 
@@ -349,7 +351,11 @@ def _arduino_loop(port: str) -> None:
 
                 payload = json.dumps(_state)
 
-            _broadcast(payload)
+            # Throttle broadcasts to 1 Hz — Arduino sends 5/s which causes flicker
+            now = time.time()
+            if now - _last_broadcast >= 1.0:
+                _broadcast(payload)
+                _last_broadcast = now
 
         except Exception as exc:
             print(f'[ARDUINO] Lost connection: {exc}')
