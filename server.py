@@ -83,7 +83,7 @@ _policy_lock_until = 0.0   # epoch time; sim won't touch PWM until after this
 
 # ─── Dynamic PWM model ───────────────────────────────────────────────────────
 
-def _compute_pwm(solar_ma: float, load_ma: float, battery_soc: float, sim_hour: float) -> list:
+def _compute_pwm(solar_ma: float, load_ma: float, battery_soc: float, sim_hour: float, light: int = 512) -> list:
     """
     Distribute power across tiers based on available supply.
 
@@ -94,8 +94,10 @@ def _compute_pwm(solar_ma: float, load_ma: float, battery_soc: float, sim_hour: 
     """
     # Normalize solar to 0-1 (peak ~520 mA at noon)
     solar_avail = min(1.0, solar_ma / 520.0)
-    # Combined score: solar dominates, battery adds baseload capacity
-    power_score = solar_avail * 1.0 + battery_soc * 0.5
+    # Light sensor 0-1023 also contributes (blended with solar)
+    light_avail = min(1.0, light / 1023.0)
+    # Combined score: average of solar + light drives the model, battery adds baseload
+    power_score = (solar_avail * 0.6 + light_avail * 0.4) + battery_soc * 0.5
 
     # Duck-curve evening demand spike (17-21h) reduces effective score
     if 17 <= sim_hour <= 21:
@@ -350,7 +352,7 @@ def _arduino_loop(port: str) -> None:
                 # Recompute per-building PWM unless mayor directive is active
                 if time.time() > _policy_lock_until:
                     _state['pwm'] = _compute_pwm(
-                        _state['solar_ma'], _state['load_ma'], soc, h
+                        _state['solar_ma'], _state['load_ma'], soc, h, _state['light']
                     )
 
                 payload = json.dumps(_state)
@@ -396,8 +398,9 @@ def _sim_loop() -> None:
             demand      = max(50, base_demand + eve_spike + math.sin(tick * 0.19) * 20)
             _state['load_ma'] = round(demand, 1)
 
+            # Light always tracks simulated solar (Arduino Format A firmware doesn't read LDR)
+            _state['light'] = int(min(1023, solar * 1.96))
             if not _arduino_connected:
-                _state['light']     = int(min(1023, solar * 1.96))
                 _state['temp_c']    = round(18 + 8 * math.sin(math.pi * (h - 6) / 12), 1)
                 _state['reasoning'] = 'Simulation mode — no Arduino connected'
 
@@ -411,7 +414,7 @@ def _sim_loop() -> None:
 
             # Recompute per-building PWM unless a mayor directive is still active
             if time.time() > _policy_lock_until:
-                _state['pwm'] = _compute_pwm(solar, demand, soc, h)
+                _state['pwm'] = _compute_pwm(solar, demand, soc, h, _state['light'])
                 _state['active_policy'] = 'None'
 
             payload = json.dumps(_state)
