@@ -2,6 +2,7 @@
   "name": "neo-power",
   "version": "1.0.0",
   "scripts": {
-    "start": "node neo-app/server.js"
+    "install": "cd neo-app && npm install",
+    "start": "cd neo-app && node server.js"
   }
 }
