@@ -1,13 +1,13 @@
-import { useState, useRef, useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { NeoState } from '../types/NeoState';
 import '../styles/MayorChat.css';
 
-export interface MayorChatProps {
+interface MayorChatProps {
   state: NeoState;
   onDirective: (directive: string) => void;
 }
 
-export interface ChatMessage {
+interface ChatMessage {
   role: 'mayor' | 'neo';
   text: string;
   timestamp: number;
@@ -24,9 +24,7 @@ export function MayorChat({ state, onDirective }: MayorChatProps) {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // Auto-scroll to bottom on new messages
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -38,8 +36,6 @@ export function MayorChat({ state, onDirective }: MayorChatProps) {
 
     const userMessage = input.trim();
     setInput('');
-
-    // Add user message to chat
     setMessages((prev) => [
       ...prev,
       {
@@ -48,15 +44,13 @@ export function MayorChat({ state, onDirective }: MayorChatProps) {
         timestamp: Date.now(),
       },
     ]);
-
     setIsLoading(true);
 
     try {
-      // Send directive to backend API
-      // Try localhost:5000 first, fall back to relative path
-      const apiUrl = typeof window !== 'undefined'
-        ? `http://${window.location.hostname}:5000/api/mayor-directive`
-        : 'http://localhost:5000/api/mayor-directive';
+      const apiUrl =
+        typeof window !== 'undefined'
+          ? `http://${window.location.hostname}:5000/api/mayor-directive`
+          : 'http://localhost:5000/api/mayor-directive';
 
       const response = await fetch(apiUrl, {
         method: 'POST',
@@ -74,7 +68,6 @@ export function MayorChat({ state, onDirective }: MayorChatProps) {
 
       const data = await response.json();
 
-      // Add K2 response to chat
       setMessages((prev) => [
         ...prev,
         {
@@ -84,15 +77,13 @@ export function MayorChat({ state, onDirective }: MayorChatProps) {
         },
       ]);
 
-      // Notify parent to update power allocation
       onDirective(userMessage);
-    } catch (err) {
-      console.error('Mayor directive error:', err);
+    } catch (error) {
       setMessages((prev) => [
         ...prev,
         {
           role: 'neo',
-          text: `ERROR: ${err instanceof Error ? err.message : 'Failed to process directive'}. Check that mayor_api.py is running on port 5000.`,
+          text: `ERROR: ${error instanceof Error ? error.message : 'Failed to process directive'}. Check that the mayor directive API is running on port 5000.`,
           timestamp: Date.now(),
         },
       ]);
@@ -101,20 +92,20 @@ export function MayorChat({ state, onDirective }: MayorChatProps) {
     }
   }
 
-  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSendDirective();
+  function handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      void handleSendDirective();
     }
   }
 
   return (
     <div className="mayor-chat">
       <div className="mayor-chat-messages" ref={scrollRef}>
-        {messages.map((msg, idx) => (
-          <div key={idx} className={`mayor-chat-message ${msg.role}`}>
-            <span className="chat-role">{msg.role === 'mayor' ? '[MAYOR]' : '[NEO]'}</span>
-            <span className="chat-text">{msg.text}</span>
+        {messages.map((message) => (
+          <div key={`${message.timestamp}-${message.role}`} className={`mayor-chat-message ${message.role}`}>
+            <span className="chat-role">{message.role === 'mayor' ? '[MAYOR]' : '[NEO]'}</span>
+            <span className="chat-text">{message.text}</span>
           </div>
         ))}
         {isLoading && (
@@ -127,22 +118,22 @@ export function MayorChat({ state, onDirective }: MayorChatProps) {
 
       <div className="mayor-chat-input-area">
         <textarea
-          ref={inputRef}
           className="mayor-chat-textarea"
-          placeholder="Enter a power allocation directive (e.g., 'Heat emergency - prioritize residential AC')..."
+          placeholder="Enter a power directive..."
           value={input}
-          onChange={(e) => setInput(e.target.value)}
+          onChange={(event) => setInput(event.target.value)}
           onKeyDown={handleKeyDown}
           disabled={isLoading}
           rows={1}
         />
         <button
           className="mayor-chat-send"
-          onClick={handleSendDirective}
+          type="button"
+          onClick={() => void handleSendDirective()}
           disabled={!input.trim() || isLoading}
-          title="Send directive (Shift+Enter)"
+          title="Send directive"
         >
-          {isLoading ? '...' : '→'}
+          {isLoading ? '...' : '->'}
         </button>
       </div>
     </div>
