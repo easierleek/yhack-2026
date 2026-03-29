@@ -237,8 +237,8 @@ def _parse_arduino_line(line: str):
                     'light':        int(float(parts[0])),
                     'temp_c':       float(parts[1]),
                     'pressure_hpa': float(parts[2]),
-                    'solar_ma':     float(parts[3]),
-                    'load_ma':      float(parts[4]),
+                    'solar_ma':     float(parts[3]) if parts[3].strip().lower() != 'nan' else 0.0,
+                    'load_ma':      float(parts[4]) if parts[4].strip().lower() != 'nan' else 0.0,
                     'pot1':         int(float(parts[5])),
                     'pot2':         int(float(parts[6])),
                     'tilt':         int(float(parts[7])),
@@ -390,8 +390,9 @@ def _sim_loop() -> None:
             demand      = max(50, base_demand + eve_spike + math.sin(tick * 0.19) * 20)
             _state['load_ma'] = round(demand, 1)
 
-            # Light always tracks simulated solar (Arduino Format A firmware doesn't read LDR)
-            _state['light'] = int(min(1023, solar * 1.96))
+            # Light: use real Arduino LDR if connected (Format B), else simulate from solar
+            if not _arduino_connected:
+                _state['light'] = int(min(1023, solar * 1.96))
             if not _arduino_connected:
                 _state['temp_c']    = round(18 + 8 * math.sin(math.pi * (h - 6) / 12), 1)
                 _state['reasoning'] = 'Simulation mode — no Arduino connected'
