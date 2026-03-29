@@ -154,7 +154,7 @@ void parseCommand(String &cmd) {
 
 // ─── SETUP ───────────────────────────────────────────────────────────────────
 void setup() {
-    Serial.begin(9600);
+    Serial.begin(115200);
     Wire.begin();
 
     // Outputs

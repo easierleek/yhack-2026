@@ -180,15 +180,13 @@ def _parse_arduino_line(line: str):
             power    = float(re.search(r'POWER:\s*([\d.]+)', line).group(1))
             load_ma  = round(current * 1000, 2)       # A → mA
             # Estimate light from V_OUT (higher output = brighter LEDs = more "solar" in demo)
-            light    = int(min(1023, (v_out / 5.0) * 1023))
             return {
-                'format':       'A',
-                'v_out':        v_out,
-                'v_drop':       v_drop,
-                'current_a':    current,
-                'power_w':      power,
-                'load_ma':      load_ma,
-                'light':        light,
+                'format':    'A',
+                'v_out':     v_out,
+                'v_drop':    v_drop,
+                'current_a': current,
+                'power_w':   power,
+                'load_ma':   load_ma,
             }
         except Exception:
             return None
@@ -274,10 +272,19 @@ def _arduino_loop(port: str) -> None:
                 fmt = parsed['format']
 
                 if fmt == 'A':
-                    load_ma  = parsed['load_ma']
-                    light    = parsed['light']
-                    _state['load_ma'] = load_ma
-                    _state['light']   = light
+                    load_ma    = parsed['load_ma']
+                    current_a  = parsed['current_a']
+                    power_w    = parsed['power_w']
+                    # Derive light: current directly reflects how many LEDs are lit.
+                    # Max observed ~0.05A at full load → maps to 1023 ADC units.
+                    light = int(min(1023, (current_a / 0.05) * 1023))
+                    # Derive temp from power dissipation — more current = warmer components.
+                    # Baseline 20°C + small rise proportional to power.
+                    temp_c = round(20.0 + power_w * 40, 1)
+                    _state['load_ma']      = load_ma
+                    _state['light']        = light
+                    _state['temp_c']       = temp_c
+                    _state['pressure_hpa'] = 1013.25  # not measured by this firmware
                     # solar_ma: keep simulation value (no dedicated solar sensor in this fw)
                     solar_ma = _state['solar_ma']
                     _state['relay'] = 1 if load_ma > solar_ma * 0.8 else 0
