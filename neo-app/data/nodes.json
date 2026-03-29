@@ -1,0 +1,13 @@
+[
+  { "id": "yale-new-haven",  "name": "Yale New Haven",  "sub": "Hospital",      "tier": "T1", "lat": 41.3037, "lng": -72.9348, "percentage": 100 },
+  { "id": "st-raphael",      "name": "St. Raphael",      "sub": "Chapel Campus", "tier": "T1", "lat": 41.3070, "lng": -72.9442, "percentage": 100 },
+  { "id": "english-station", "name": "English Station",  "sub": "Power Plant",   "tier": "T2", "lat": 41.3112, "lng": -72.9070, "percentage": 71  },
+  { "id": "harbor-sub",      "name": "Harbor Substation","sub": "Utility",       "tier": "T2", "lat": 41.2820, "lng": -72.9050, "percentage": 100 },
+  { "id": "westville-res",   "name": "Westville",        "sub": "Residential",   "tier": "T3", "lat": 41.3180, "lng": -72.9600, "percentage": 78  },
+  { "id": "dixwell-res",     "name": "Dixwell",          "sub": "Residential",   "tier": "T3", "lat": 41.3200, "lng": -72.9380, "percentage": 78  },
+  { "id": "east-rock",       "name": "East Rock",        "sub": "Residential",   "tier": "T3", "lat": 41.3240, "lng": -72.9195, "percentage": 78  },
+  { "id": "fair-haven-res",  "name": "Fair Haven",       "sub": "Residential",   "tier": "T3", "lat": 41.3100, "lng": -72.8980, "percentage": 78  },
+  { "id": "downtown-com",    "name": "Downtown",         "sub": "Commercial",    "tier": "T4", "lat": 41.3060, "lng": -72.9270, "percentage": 50  },
+  { "id": "wooster-square",  "name": "Wooster Square",   "sub": "Commercial",    "tier": "T4", "lat": 41.3015, "lng": -72.9155, "percentage": 50  },
+  { "id": "whalley-corridor","name": "Whalley Corridor", "sub": "Commercial",    "tier": "T4", "lat": 41.3095, "lng": -72.9520, "percentage": 50  }
+]
