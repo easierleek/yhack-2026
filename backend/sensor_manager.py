@@ -22,14 +22,11 @@ class SensorBounds:
 
 
 # ─── SENSOR BOUNDS ────────────────────────────────────────────────────────────
+# Only 3 physical sensors: light, temperature, pressure
 SENSOR_BOUNDS = {
-    "light_lux": SensorBounds("Light (LUX)", 0, 200000, "lux"),
+    "light_lux": SensorBounds("Light (LUX)", 0, 1023, "lux"),
     "temp_c": SensorBounds("Temperature", -10, 60, "°C"),
     "pressure_hpa": SensorBounds("Pressure", 800, 1100, "hPa"),
-    "battery_ma": SensorBounds("Battery Current", -5000, 5000, "mA"),
-    "solar_ma": SensorBounds("Solar Current", -100, 5000, "mA"),
-    "load_ma": SensorBounds("Load Current", 0, 5000, "mA"),
-    "battery_soc": SensorBounds("Battery SOC", 0, 100, "%"),
 }
 
 STUCK_SENSOR_TIMEOUT = 30.0  # seconds of unchanged readings before flagging

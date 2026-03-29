@@ -203,7 +203,10 @@ class FeatureEngineer:
     
     def compute_all_features(self) -> Dict[str, float]:
         """
-        Compute all statistical features and return as dict.
+        Compute all statistical features from available sensors.
+        
+        HARDWARE: Light (LDR), Temperature (DHT11), Pressure (BMP180)
+        SIMULATED: Solar current, Load current, Battery SOC (derived from light, temp, pressure)
         
         Provides K2 with rich context about sensor stability, trends, and patterns.
         """
@@ -211,6 +214,8 @@ class FeatureEngineer:
             return {}
         
         features = {}
+        
+        # ─── REAL SENSORS (Physical measurements) ─────────────────────────────
         
         # Light features (LDR sensor)
         if "light" in self.history[-1]:
@@ -240,14 +245,18 @@ class FeatureEngineer:
                 "temp_percentile": round(compute_percentile_rank(self.history, "temp_c"), 1),
             })
         
-        # Battery features
+        # ─── SIMULATED/DERIVED SIGNALS (from real sensors) ────────────────────
+        # These help K2 reason about energy dynamics even though we don't have
+        # actual current sensors. They're derived from light, temp, pressure.
+        
+        # Battery SOC features (simulated from solar/load balance)
         if "battery_soc" in self.history[-1]:
             features.update({
                 "battery_volatility": round(compute_volatility(self.history, "battery_soc"), 3),
                 "battery_momentum": round(compute_momentum(self.history, "battery_soc"), 4),
             })
         
-        # Solar features
+        # Solar current features (estimated from light level)
         if "solar_ma" in self.history[-1]:
             features.update({
                 "solar_volatility": round(compute_volatility(self.history, "solar_ma"), 1),

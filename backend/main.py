@@ -182,6 +182,43 @@ BASE_WEIGHTS: dict[str, float] = {
 battery_soc          = 0.50   # starts at 50% charge
 BATTERY_CAPACITY_MAH = 2000.0
 
+# ─── Estimate solar and load from available sensors ──────────────────────────
+def estimate_solar_and_load(light: int, temp_c: float, pressure_hpa: float, sim_hour: float) -> tuple[float, float]:
+    """
+    Since we only have light, temp, and pressure sensors:
+    - Solar current (mA) estimated from light level
+    - Load current (mA) estimated from time of day + weather + temperature
+    """
+    # Solar: 0-1023 LDR → 0-800 mA (brightness ∝ solar generation)
+    solar_ma = (light / 1023.0) * 800.0
+    
+    # Load (base + temperature factor + time-of-day factor + pressure factor)
+    base_load = 150.0  # Always some baseline load
+    
+    # Temperature load: hot days consume more (AC), cold days consume more (heating)
+    temp_load = abs(temp_c - 20.0) * 5.0  # Peak at 20°C, +5mA per degree deviation
+    
+    # Time of day: peak usage 6-9am, 11am-1pm, 5-9pm
+    if 6 <= sim_hour < 9:
+        time_mult = 1.8
+    elif 11 <= sim_hour < 13:
+        time_mult = 1.6
+    elif 17 <= sim_hour < 21:
+        time_mult = 1.9
+    elif 0 <= sim_hour < 5:
+        time_mult = 0.4  # Night is low usage
+    else:
+        time_mult = 1.0
+    
+    # Pressure factor: dropping pressure = storm = people use more power (anxiety, lights, fans)
+    # Assume base pressure is ~1013 hPa; lower = more demand
+    pressure_load = max(0.0, (1013.0 - pressure_hpa) * 2.0)
+    
+    load_ma = base_load + temp_load + (base_load * time_mult) + pressure_load
+    load_ma = max(50.0, load_ma)  # Never go below minimum load
+    
+    return solar_ma, load_ma
+
 def update_battery(solar_ma: float, load_ma: float, dt: float) -> None:
     global battery_soc
     net_ma      = solar_ma - load_ma
@@ -644,27 +681,23 @@ def main() -> None:
             if not line:
                 continue
             parts = line.split(",")
-            if len(parts) < 9:
+            # Only 3 sensors: light, temp_c, pressure_hpa (+ optional button)
+            if len(parts) < 3:
                 continue
             sensor: dict = {
                 "light":        int(parts[0]),
                 "temp_c":       float(parts[1]),
                 "pressure_hpa": float(parts[2]),
-                "solar_ma":     float(parts[3]),
-                "load_ma":      float(parts[4]),
-                "pot1":         int(parts[5]),
-                "pot2":         int(parts[6]),
-                "tilt":         int(parts[7]),
-                "button":       int(parts[8]),
+                "button":       int(parts[3]) if len(parts) > 3 else 0,
             }
             
             # ── Sensor validation ─────────────────────────────────────────────
             if sensor_manager:
-                for sensor_key in ["light", "temp_c", "pressure_hpa", "solar_ma", "load_ma"]:
+                for sensor_key in ["light", "temp_c", "pressure_hpa"]:
                     result = sensor_manager.update_reading(
                         f"{sensor_key}_lux" if sensor_key == "light" else 
                         f"{sensor_key}_c" if sensor_key == "temp_c" else
-                        f"{sensor_key}_hpa" if sensor_key == "pressure_hpa" else sensor_key,
+                        f"{sensor_key}_hpa",
                         sensor[sensor_key]
                     )
                     if result["warnings"]:
@@ -684,9 +717,15 @@ def main() -> None:
         last_time = now
 
         record_sensor(sensor)
-        update_battery(sensor["solar_ma"], sensor["load_ma"], dt)
-
         sim_hour = get_sim_hour()
+        
+        # Estimate solar and load from available sensors (light, temp, pressure)
+        solar_ma, load_ma = estimate_solar_and_load(sensor["light"], sensor["temp_c"], sensor["pressure_hpa"], sim_hour)
+        sensor["solar_ma"] = solar_ma
+        sensor["load_ma"] = load_ma
+        
+        update_battery(solar_ma, load_ma, dt)
+        
         price    = get_price(sim_hour)
 
         # ── 3. Policy engine (addon) ───────────────────────────────────────────
