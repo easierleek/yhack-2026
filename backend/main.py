@@ -172,7 +172,7 @@ def get_duck_demand() -> float:
 BASE_WEIGHTS: dict[str, float] = {
     "tier1_dim":     -1000.0,   # per 1% reduction — catastrophic
     "tier2_per10":     -50.0,   # per 10% dim below full
-    "tier3_outrage":   -20.0,   # per 10% mismatch vs potentiometer demand
+    "tier3_outrage":   -20.0,   # per 10% dim below demand model (residents need baseline)
     "tier4_per10":      -5.0,   # per 10% dim (commercial — minor)
     "relay_click":    -500.0,   # every time relay switches ON
     "tier4_revenue":   +10.0,   # per second commercial LEDs are lit
@@ -443,21 +443,29 @@ JSON object. No thinking out loud. No explanation. No prose. No lists. Nothing
 before the opening brace. Nothing after the closing brace. JUST THE JSON.
 
 === POWER SOURCES ===
-GREEN GRID : Solar (MB102). Cheap, limited. Tracked by LDR sensor.
+GREEN GRID : Solar (MB102). Cheap, limited.
 STATE GRID : Utility adapter. Expensive. Activated by Relay.
-Two INA219 sensors: solar_ma = solar output, load_ma = city draw.
+
+HARDWARE REALITY (3 physical sensors):
+  • Light sensor (LDR)      → solar generation proxy
+  • Temperature (DHT11)     → thermal load scaling
+  • Pressure (BMP180)       → storm detection + demand estimation
+  
+DERIVED SIGNALS (computed from above):
+  • solar_ma  = light-based solar estimate (0-800 mA)
+  • load_ma   = pressure + temp + time-of-day demand model
 
 === 4 TIERS (16 PWM channels, 0=off, 255=full) ===
 T1  CH 0-1   HOSPITALS   Always 255. Never dim. Catastrophic penalty if low.
 T2  CH 2-4   UTILITIES   Industry demand (varies by temperature).
-T3  CH 5-9   HOUSES      Residents demand (track potentiometer, but context matters).
+T3  CH 5-9   HOUSES      Residential demand (base load from time-of-day + weather).
 T4  CH 10-15 MALLS       Commercial — can be dimmed for reserve charging.
 
 === HOW THE REWARD SYSTEM WORKS ===
 Your goal is to minimize penalties:
   • dim T1 → CATASTROPHIC penalty (-1000/1% reduction)
   • dim T2 → HIGH penalty (-50 per 10%)
-  • T3 mismatch from pot → PENALTY (-20 per 10% mismatch)
+  • T3 dimming → PENALTY (-20 per 10%, since residents need baseline)
   • relay click → EXPENSIVE (-500 per activation)
   • dim T4 → small penalty (-5 per 10%)
 
