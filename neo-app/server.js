@@ -19,7 +19,7 @@ state.setIo(io);
 
 // ── Middleware ────────────────────────────────────────────────────────────────
 app.use(express.json());
-app.use(express.static(path.join(__dirname, '../frontend/web')));
+app.use(express.static(path.join(__dirname, '../frontend/web/dist')));
 
 // ── REST routes ───────────────────────────────────────────────────────────────
 app.use('/api',             apiRouter);
