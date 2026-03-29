@@ -53,7 +53,7 @@ async function start() {
     console.error('[roads] initial cache load failed:', error.message);
   }
 
-  server.listen(PORT, () => {
+  server.listen(PORT, '0.0.0.0', () => {
     console.log(`\n  NEO server  →  http://localhost:${PORT}`);
     console.log(`  Simulate    →  http://localhost:${PORT}/api/simulate`);
     console.log(`  Health      →  http://localhost:${PORT}/api/health`);
