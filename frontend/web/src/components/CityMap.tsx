@@ -169,13 +169,10 @@ export function CityMap({ state, selectedNodeId, onSelectZone, onSelectNode }: P
     map.fitBounds(BOUNDS, { padding: [0, 0], animate: false });
     lockMapToBounds(map);
 
-    let tileErrFired = false;
-    const stadiaLayer = leaflet.tileLayer(
-      'https://tiles.stadiamaps.com/tiles/alidade_smooth/{z}/{x}/{y}{r}.png',
-      { maxZoom: 17, attribution: '© Stadia Maps' },
-    );
-
-    stadiaLayer.addTo(map);
+    leaflet.tileLayer(
+      'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+      { subdomains: 'abcd', maxZoom: 17, attribution: '© CartoDB' },
+    ).addTo(map);
     leaflet.control.zoom({ position: 'topleft' }).addTo(map);
 
     roadsLayerRef.current = leaflet.layerGroup().addTo(map) as LeafletLayerGroup;
@@ -188,17 +185,6 @@ export function CityMap({ state, selectedNodeId, onSelectZone, onSelectNode }: P
     };
 
     window.addEventListener('resize', handleResize);
-
-    // Some leaflet typings are intentionally loose here.
-    (stadiaLayer as unknown as { on?: (event: string, handler: () => void) => void }).on?.('tileerror', () => {
-      if (tileErrFired) return;
-      tileErrFired = true;
-      map.removeLayer(stadiaLayer as unknown as LeafletLayerGroup);
-      leaflet.tileLayer(
-        'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
-        { maxZoom: 17, subdomains: 'abcd', attribution: '© CartoDB' },
-      ).addTo(map);
-    });
 
     return () => {
       window.removeEventListener('resize', handleResize);
