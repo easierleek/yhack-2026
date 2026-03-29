@@ -1,6 +1,6 @@
 [build]
 builder = "nixpacks"
-buildCommand = "python3 -m venv /opt/venv && /opt/venv/bin/pip install -r requirements.txt && cd frontend/web && rm -rf node_modules && npm install && npm run build"
+buildCommand = "python3 -m venv /opt/venv && /opt/venv/bin/pip install -r requirements.txt"
 
 [deploy]
 startCommand = "/opt/venv/bin/python3 server.py"
