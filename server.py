@@ -519,25 +519,77 @@ def mayor_directive():
     directive = data.get('directive', '')
     dl = directive.lower()
 
+    # Detect which tier is targeted
+    commercial = any(w in dl for w in ['commercial', 't4', 'whalley', 'wooster', 'downtown'])
+    residential = any(w in dl for w in ['residential', 't3', 'westville', 'dixwell', 'fair haven', 'east rock'])
+    hospital = any(w in dl for w in ['hospital', 't1', 'yale', 'raphael', 'critical'])
+    utility = any(w in dl for w in ['utility', 't2', 'english', 'harbor', 'substation'])
+    increase = any(w in dl for w in ['increase', 'boost', 'more', 'maximize', 'full', 'max', 'on', 'restore', 'raise'])
+    reduce = any(w in dl for w in ['reduce', 'cut', 'lower', 'dim', 'save', 'conserve', 'less', 'shed'])
+    emergency = any(w in dl for w in ['emergency', 'shutdown', 'blackout', 'off'])
+
     with _state_lock:
-        if any(w in dl for w in ['off', 'shutdown', 'emergency', 'cut', 'blackout']):
-            _state['pwm'] = [255, 255, 51, 51, 51, 51, 51, 51, 51, 51, 0, 0, 0, 0, 0, 0]
-            strategy = 'REDUCE'
+        pwm = list(_state['pwm'])  # start from current values
+
+        if emergency:
+            # Emergency: protect T1, shed T4 entirely, halve T3
+            pwm = [255, 255, 51, 51, 51, 51, 51, 51, 51, 51, 0, 0, 0, 0, 0, 0]
+            strategy = 'EMERGENCY'
             _state['fault'] = 'EMERGENCY LOAD SHED ACTIVE'
-        elif any(w in dl for w in ['reduce', 'save', 'conserve', 'dim']):
-            _state['pwm'] = [255, 255, 204, 204, 204, 153, 153, 153, 153, 153, 77, 77, 77, 77, 77, 77]
+
+        elif increase and commercial:
+            # Boost T4, rob from T3 to compensate
+            pwm[10:16] = [230] * 6   # T4 commercial → high
+            pwm[5:10]  = [120] * 5   # T3 residential → reduced
+            strategy = 'BOOST_COMMERCIAL'
+            _state['fault'] = ''
+
+        elif increase and residential:
+            # Boost T3, rob from T4
+            pwm[5:10]  = [230] * 5   # T3 residential → high
+            pwm[10:16] = [80]  * 6   # T4 commercial → reduced
+            strategy = 'BOOST_RESIDENTIAL'
+            _state['fault'] = ''
+
+        elif increase and hospital:
+            # Max T1, pull from T3+T4
+            pwm[0:2]   = [255] * 2   # T1 → max
+            pwm[5:10]  = [140] * 5   # T3 → reduced
+            pwm[10:16] = [60]  * 6   # T4 → low
+            strategy = 'BOOST_CRITICAL'
+            _state['fault'] = ''
+
+        elif reduce and commercial:
+            # Shed T4
+            pwm[10:16] = [40] * 6
+            strategy = 'SHED_COMMERCIAL'
+            _state['fault'] = ''
+
+        elif reduce and residential:
+            # Dim T3, protect T1
+            pwm[5:10]  = [100] * 5
+            strategy = 'SHED_RESIDENTIAL'
+            _state['fault'] = ''
+
+        elif reduce:
+            # General reduction: protect T1, step down T2→T3→T4
+            pwm = [255, 255, 200, 200, 200, 140, 140, 140, 140, 140, 60, 60, 60, 60, 60, 60]
             strategy = 'REDUCE'
             _state['fault'] = ''
-        elif any(w in dl for w in ['on', 'maximize', 'full', 'max', 'increase', 'restore']):
-            _state['pwm'] = [255] * 16
+
+        elif increase:
+            # General increase: step up all tiers proportionally
+            pwm = [255, 255, 255, 255, 255, 220, 220, 220, 220, 220, 180, 180, 180, 180, 180, 180]
             strategy = 'INCREASE'
             _state['fault'] = ''
+
         else:
-            _state['pwm'] = [255, 255, 255, 255, 255,
-                             200, 200, 200, 200, 200,
-                             128, 128, 128, 128, 128, 128]
+            # Balanced fallback
+            pwm = [255, 255, 255, 255, 255, 200, 200, 200, 200, 200, 128, 128, 128, 128, 128, 128]
             strategy = 'BALANCED'
             _state['fault'] = ''
+
+        _state['pwm'] = pwm
 
         _state['active_policy'] = directive[:60] if directive else 'None'
         _state['reasoning']     = f'Mayor directive: {directive}'
