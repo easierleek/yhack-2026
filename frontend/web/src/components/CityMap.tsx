@@ -18,7 +18,12 @@ type LeafletGlobal = {
 
 type LeafletMap = {
   setView: (latLng: [number, number], zoom: number) => LeafletMap;
+  fitBounds: (bounds: [[number, number], [number, number]], options?: Record<string, unknown>) => LeafletMap;
   setMaxBounds: (bounds: [[number, number], [number, number]]) => LeafletMap;
+  setMinZoom: (zoom: number) => LeafletMap;
+  setZoom: (zoom: number) => LeafletMap;
+  getZoom: () => number;
+  getBoundsZoom: (bounds: [[number, number], [number, number]], inside?: boolean, padding?: { x: number; y: number } | [number, number]) => number;
   invalidateSize: () => void;
   remove: () => void;
   removeLayer: (layer: LeafletLayerGroup) => void;
@@ -49,24 +54,35 @@ type RoadPayload = {
 };
 
 const BOUNDS: [[number, number], [number, number]] = [
-  [41.27, -72.97],
-  [41.35, -72.88],
+  [41.24, -73.02],
+  [41.39, -72.82],
 ];
 
-const ROAD_STYLES: Record<string, { color: string; weight: number; z: number }> = {
-  motorway: { color: '#E05555', weight: 4, z: 8 },
-  motorway_link: { color: '#E05555', weight: 4, z: 7 },
-  trunk: { color: '#E05555', weight: 4, z: 8 },
-  trunk_link: { color: '#E05555', weight: 4, z: 7 },
-  primary: { color: '#4A90D9', weight: 4, z: 6 },
-  primary_link: { color: '#4A90D9', weight: 4, z: 5 },
-  secondary: { color: '#3AAA6A', weight: 4, z: 4 },
-  secondary_link: { color: '#3AAA6A', weight: 4, z: 3 },
-  tertiary: { color: '#C49A3C', weight: 4, z: 3 },
-  tertiary_link: { color: '#C49A3C', weight: 4, z: 2 },
+const ROAD_STYLES: Record<string, { color: string; weight: number; opacity: number; z: number }> = {
+  motorway: { color: '#E05555', weight: 5.5, opacity: 0.84, z: 9 },
+  motorway_link: { color: '#E05555', weight: 4.8, opacity: 0.78, z: 8 },
+  trunk: { color: '#E05555', weight: 5.5, opacity: 0.84, z: 9 },
+  trunk_link: { color: '#E05555', weight: 4.8, opacity: 0.78, z: 8 },
+  primary: { color: '#4A90D9', weight: 4.1, opacity: 0.76, z: 7 },
+  primary_link: { color: '#4A90D9', weight: 3.5, opacity: 0.7, z: 6 },
+  secondary: { color: '#3AAA6A', weight: 2.9, opacity: 0.62, z: 5 },
+  secondary_link: { color: '#3AAA6A', weight: 2.5, opacity: 0.56, z: 4 },
+  tertiary: { color: '#C49A3C', weight: 2, opacity: 0.46, z: 3 },
+  tertiary_link: { color: '#C49A3C', weight: 1.7, opacity: 0.4, z: 2 },
+  residential: { color: '#C49A3C', weight: 1.25, opacity: 0.28, z: 1 },
+  service: { color: '#C49A3C', weight: 1.05, opacity: 0.22, z: 0 },
+  unclassified: { color: '#C49A3C', weight: 1.15, opacity: 0.24, z: 1 },
 };
 
 let roadsCachePromise: Promise<RoadPayload> | null = null;
+
+function lockMapToBounds(map: LeafletMap) {
+  const minZoom = map.getBoundsZoom(BOUNDS, true, [0, 0]);
+  map.setMinZoom(minZoom);
+  if (map.getZoom() < minZoom) {
+    map.setZoom(minZoom);
+  }
+}
 
 function getLeaflet(): LeafletGlobal | null {
   return (window as Window & { L?: LeafletGlobal }).L ?? null;
@@ -89,7 +105,7 @@ function nodeCardHtml(node: InfrastructureNode, state: NeoState, selectedNodeId:
   const selectedClass = selectedNodeId === node.id ? 'n-card-selected' : '';
 
   return `
-    <div class="n-card n-${node.tier.toLowerCase()} ${selectedClass}" data-id="${node.id}">
+    <div class="n-card n-${node.tier.toLowerCase()} n-cat-${node.category} ${selectedClass}" data-id="${node.id}">
       <div class="n-head">
         <span class="n-tier">${node.tier}</span>
         <span class="n-pct">${pct}%</span>
@@ -138,19 +154,20 @@ export function CityMap({ state, selectedNodeId, onSelectZone, onSelectNode }: P
     if (!leaflet || !mapRef.current || mapInstanceRef.current) return;
 
     const map = leaflet.map(mapRef.current, {
-      center: [41.308, -72.928],
-      zoom: 14,
-      minZoom: 13,
+      center: [41.311, -72.92],
+      zoom: 12,
       maxZoom: 17,
       preferCanvas: true,
       zoomControl: false,
       attributionControl: false,
       maxBounds: BOUNDS,
       maxBoundsViscosity: 1.0,
-    }).setView([41.308, -72.928], 14);
+    }).setView([41.311, -72.92], 12);
 
     map.setMaxBounds(BOUNDS);
     map.invalidateSize();
+    map.fitBounds(BOUNDS, { padding: [0, 0], animate: false });
+    lockMapToBounds(map);
 
     let tileErrFired = false;
     const stadiaLayer = leaflet.tileLayer(
@@ -165,6 +182,13 @@ export function CityMap({ state, selectedNodeId, onSelectZone, onSelectNode }: P
     nodeLayerRef.current = leaflet.layerGroup().addTo(map) as LeafletLayerGroup;
     mapInstanceRef.current = map;
 
+    const handleResize = () => {
+      map.invalidateSize();
+      lockMapToBounds(map);
+    };
+
+    window.addEventListener('resize', handleResize);
+
     // Some leaflet typings are intentionally loose here.
     (stadiaLayer as unknown as { on?: (event: string, handler: () => void) => void }).on?.('tileerror', () => {
       if (tileErrFired) return;
@@ -177,6 +201,7 @@ export function CityMap({ state, selectedNodeId, onSelectZone, onSelectNode }: P
     });
 
     return () => {
+      window.removeEventListener('resize', handleResize);
       roadsLayerRef.current = null;
       nodeLayerRef.current = null;
       mapInstanceRef.current?.remove();
@@ -207,7 +232,7 @@ export function CityMap({ state, selectedNodeId, onSelectZone, onSelectNode }: P
         .filter((element): element is Extract<RoadElement, { type: 'way' }> => element.type === 'way' && Boolean(element.tags?.highway && ROAD_STYLES[element.tags.highway]))
         .sort((a, b) => ROAD_STYLES[a.tags!.highway!].z - ROAD_STYLES[b.tags!.highway!].z);
 
-      const chunkSize = 100;
+      const chunkSize = 250;
       for (let start = 0; start < ways.length; start += chunkSize) {
         if (cancelled) return;
         const chunk = ways.slice(start, start + chunkSize);
@@ -220,7 +245,7 @@ export function CityMap({ state, selectedNodeId, onSelectZone, onSelectNode }: P
             weight: style.weight,
             lineCap: 'round',
             lineJoin: 'round',
-            opacity: 0.65,
+            opacity: style.opacity,
             renderer,
             interactive: false,
             smoothFactor: 1,

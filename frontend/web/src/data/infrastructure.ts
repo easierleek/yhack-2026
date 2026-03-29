@@ -1,9 +1,12 @@
 import type { TierKey } from '../types/NeoState';
 
+export type InfrastructureCategory = 'residential' | 'commercial' | 'hospital' | 'utility';
+
 export interface InfrastructureNode {
   id: string;
   name: string;
   sub: string;
+  category: InfrastructureCategory;
   tier: TierKey;
   lat: number;
   lng: number;
@@ -19,6 +22,7 @@ export const INFRASTRUCTURE_NODES: InfrastructureNode[] = [
     id: 'yale-new-haven',
     name: 'Yale New Haven',
     sub: 'Hospital',
+    category: 'hospital',
     tier: 'T1',
     lat: 41.3037,
     lng: -72.9348,
@@ -32,6 +36,7 @@ export const INFRASTRUCTURE_NODES: InfrastructureNode[] = [
     id: 'st-raphael',
     name: 'St. Raphael',
     sub: 'Chapel Campus',
+    category: 'hospital',
     tier: 'T1',
     lat: 41.307,
     lng: -72.9442,
@@ -45,6 +50,7 @@ export const INFRASTRUCTURE_NODES: InfrastructureNode[] = [
     id: 'english-station',
     name: 'English Station',
     sub: 'Power Plant',
+    category: 'utility',
     tier: 'T2',
     lat: 41.3112,
     lng: -72.907,
@@ -58,6 +64,7 @@ export const INFRASTRUCTURE_NODES: InfrastructureNode[] = [
     id: 'harbor-sub',
     name: 'Harbor Substation',
     sub: 'Utility',
+    category: 'utility',
     tier: 'T2',
     lat: 41.282,
     lng: -72.905,
@@ -71,6 +78,7 @@ export const INFRASTRUCTURE_NODES: InfrastructureNode[] = [
     id: 'westville-res',
     name: 'Westville',
     sub: 'Residential',
+    category: 'residential',
     tier: 'T3',
     lat: 41.318,
     lng: -72.96,
@@ -84,6 +92,7 @@ export const INFRASTRUCTURE_NODES: InfrastructureNode[] = [
     id: 'dixwell-res',
     name: 'Dixwell',
     sub: 'Residential',
+    category: 'residential',
     tier: 'T3',
     lat: 41.32,
     lng: -72.938,
@@ -97,6 +106,7 @@ export const INFRASTRUCTURE_NODES: InfrastructureNode[] = [
     id: 'fair-haven-res',
     name: 'Fair Haven',
     sub: 'Residential',
+    category: 'residential',
     tier: 'T3',
     lat: 41.31,
     lng: -72.898,
@@ -110,6 +120,7 @@ export const INFRASTRUCTURE_NODES: InfrastructureNode[] = [
     id: 'downtown-com',
     name: 'Downtown',
     sub: 'Commercial',
+    category: 'commercial',
     tier: 'T4',
     lat: 41.306,
     lng: -72.927,

@@ -12,13 +12,22 @@ body,
 
 :root {
   color-scheme: dark;
-  --bg-dark: #070d13;
-  --bg-card: rgba(15, 21, 29, 0.92);
-  --bg-card-hover: rgba(21, 30, 40, 0.98);
-  --border: rgba(181, 199, 216, 0.1);
-  --text-primary: #edf4fb;
-  --text-secondary: #94a7ba;
-  --text-dim: #627586;
+  --bg-dark: #0b0f14;
+  --surface-0: #111827;
+  --surface-1: #161d27;
+  --surface-2: #1b2430;
+  --surface-3: #222c38;
+  --surface-overlay: rgba(17, 24, 39, 0.9);
+  --surface-overlay-strong: rgba(17, 24, 39, 0.96);
+  --bg-card: rgba(22, 29, 39, 0.94);
+  --bg-card-hover: rgba(27, 36, 48, 0.98);
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.12);
+  --text-primary: #f3f6fb;
+  --text-secondary: #a7b3c4;
+  --text-dim: #738196;
+  --shadow-soft: 0 12px 30px rgba(0, 0, 0, 0.28);
+  --shadow-panel: 0 24px 64px rgba(0, 0, 0, 0.42);
   --color-t1: #7ab3ff;
   --color-t2: #ff6f7d;
   --color-t3: #4ec39c;
@@ -32,7 +41,7 @@ body,
   --indigo: #98a8ff;
   --header-height: 58px;
   font-family: 'Avenir Next', 'Trebuchet MS', 'Segoe UI', sans-serif;
-  font-size: 13px;
+  font-size: clamp(11px, 0.9vw, 15px);
   color: var(--text-primary);
   background: var(--bg-dark);
 }
@@ -71,7 +80,7 @@ select {
   background: var(--bg-card);
   border: 1px solid var(--border);
   padding: 14px 16px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025), var(--shadow-soft);
 }
 
 .text-secondary {

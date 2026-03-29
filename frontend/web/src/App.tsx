@@ -10,30 +10,31 @@ import type { TierKey } from './types/NeoState';
 import './App.css';
 
 const DEFAULT_PANEL = {
-  width: 380,
-  height: 540,
-  right: 24,
-  bottom: 108,
+  width: Math.round(window.innerWidth * 0.26),
+  height: Math.round(window.innerHeight * 0.62),
+  right: Math.round(window.innerWidth * 0.016),
+  bottom: Math.round(window.innerHeight * 0.1),
 };
 
 const DEFAULT_CHAT_PANEL = {
   width: 450,
   height: 320,
-  left: 24,
+  right: 24,
   bottom: 108,
 };
 
 function clampPanelRect(rect: typeof DEFAULT_PANEL) {
-  const viewportWidth = window.innerWidth;
-  const viewportHeight = window.innerHeight;
-  const topSafeArea = 96;
-  const sidePadding = 16;
-  const width = Math.max(320, Math.min(560, rect.width));
-  const height = Math.max(380, Math.min(viewportHeight - topSafeArea - sidePadding, rect.height));
-  const right = Math.max(sidePadding, Math.min(viewportWidth - 220, rect.right));
-  const maxBottom = Math.max(92, viewportHeight - height - topSafeArea);
-  const bottom = Math.max(92, Math.min(maxBottom, rect.bottom));
-
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const minW = Math.round(vw * 0.18);
+  const maxW = Math.round(vw * 0.5);
+  const topSafe = Math.round(vh * 0.1);
+  const sidePad = Math.round(vw * 0.01);
+  const width = Math.max(minW, Math.min(maxW, rect.width));
+  const height = Math.max(Math.round(vh * 0.4), Math.min(vh - topSafe - sidePad, rect.height));
+  const right = Math.max(sidePad, Math.min(vw - Math.round(vw * 0.15), rect.right));
+  const maxBottom = Math.max(Math.round(vh * 0.06), vh - height - topSafe);
+  const bottom = Math.max(Math.round(vh * 0.06), Math.min(maxBottom, rect.bottom));
   return { width, height, right, bottom };
 }
 
@@ -44,11 +45,11 @@ function clampChatPanelRect(rect: typeof DEFAULT_CHAT_PANEL) {
   const sidePadding = 16;
   const width = Math.max(320, Math.min(600, rect.width));
   const height = Math.max(240, Math.min(viewportHeight - topSafeArea - sidePadding, rect.height));
-  const left = Math.max(sidePadding, Math.min(viewportWidth - 340, rect.left));
+  const right = Math.max(sidePadding, Math.min(viewportWidth - 340, rect.right));
   const maxBottom = Math.max(92, viewportHeight - height - topSafeArea);
   const bottom = Math.max(92, Math.min(maxBottom, rect.bottom));
 
-  return { width, height, left, bottom };
+  return { width, height, right, bottom };
 }
 
 export default function App() {
@@ -62,7 +63,8 @@ export default function App() {
   const [chatPanelRect, setChatPanelRect] = useState(DEFAULT_CHAT_PANEL);
   const [chatDragging, setChatDragging] = useState(false);
   const dragRef = useRef<{ pointerId: number; startX: number; startY: number; startRight: number; startBottom: number } | null>(null);
-  const chatDragRef = useRef<{ pointerId: number; startX: number; startY: number; startLeft: number; startBottom: number } | null>(null);
+  const chatDragRef = useRef<{ pointerId: number; startX: number; startY: number; startRight: number; startBottom: number } | null>(null);
+  const panelScrollRef = useRef<HTMLDivElement>(null);
 
   const simLabel = `${todIcon(state.sim_hour)} ${fmtSimHour(state.sim_hour)}`;
   const panelScale = useMemo(() => {
@@ -85,6 +87,12 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (panelOpen && panelScrollRef.current) {
+      panelScrollRef.current.scrollTop = 0;
+    }
+  }, [panelOpen]);
+
+  useEffect(() => {
     function onMove(event: PointerEvent) {
       if (dragRef.current && dragRef.current.pointerId === event.pointerId) {
         const dx = dragRef.current.startX - event.clientX;
@@ -97,11 +105,11 @@ export default function App() {
       }
 
       if (chatDragRef.current && chatDragRef.current.pointerId === event.pointerId) {
-        const dx = event.clientX - chatDragRef.current.startX;
+        const dx = chatDragRef.current.startX - event.clientX;
         const dy = chatDragRef.current.startY - event.clientY;
         setChatPanelRect((prev) => clampChatPanelRect({
           ...prev,
-          left: chatDragRef.current!.startLeft + dx,
+          right: chatDragRef.current!.startRight + dx,
           bottom: chatDragRef.current!.startBottom + dy,
         }));
       }
@@ -184,7 +192,7 @@ export default function App() {
       pointerId: event.pointerId,
       startX: event.clientX,
       startY: event.clientY,
-      startLeft: chatPanelRect.left,
+      startRight: chatPanelRect.right,
       startBottom: chatPanelRect.bottom,
     };
     setChatDragging(true);
@@ -270,7 +278,7 @@ export default function App() {
               </button>
             </div>
           </div>
-          <div className="floating-panel-scroll">
+          <div className="floating-panel-scroll" ref={panelScrollRef}>
             <div className="floating-panel-scale" style={{ transform: `scale(${panelScale})`, width: `${100 / panelScale}%` }}>
               <Sidebar
                 state={state}
@@ -297,7 +305,7 @@ export default function App() {
 
         <aside
           className={`floating-panel mayor-chat-panel ${chatPanelOpen ? 'open' : ''} ${chatDragging ? 'dragging' : ''}`}
-          style={{ width: chatPanelRect.width, height: chatPanelRect.height, left: chatPanelRect.left, bottom: chatPanelRect.bottom }}
+          style={{ width: chatPanelRect.width, height: chatPanelRect.height, right: chatPanelRect.right, bottom: chatPanelRect.bottom }}
         >
           <div className="floating-panel-header" onPointerDown={startChatPanelDrag}>
             <div>
